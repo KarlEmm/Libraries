@@ -1,11 +1,12 @@
 #include <algorithm>
 #include <cassert>
+#include <iostream> // TODO (keb): for temporary dedugging.
 #include <random>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
-namespace Kmeans
+namespace KMeans
 {
 
 template <typename T>    
@@ -14,33 +15,54 @@ using Cluster = std::vector<T>;
 template <typename T>
 using Clusters = std::vector<Cluster<T>>;
 
-template <typename T>
+template <typename T = double>
 struct Point
 {
     Point() = default;
-    Point(std::vector<T> data) : m_data(data) {};
+    Point(const std::vector<T>& data) : m_data(data) 
+    {
 
+    };
+    Point(std::vector<T>&& data) : m_data(std::move(data)) 
+    {
+
+    };
     Point(const Point<T>& other)
     {
         this->m_data = other.m_data;
     }
+    Point(Point<T>&& other) : m_data(std::move(other.m_data)) 
+    {
+
+    };
     
     Point& operator=(const Point<T>& other)
     {
         this->m_data = other.m_data;
         return *this;
     }
+    Point& operator=(const std::vector<T>& data)
+    {
+        this->m_data = data;
+        return *this;
+    }
 
-    Point operator+=(const Point& other)
+    Point& operator+=(const Point& other)
     {
         assert(m_data.size() == other.size() && "Adding Points of different dimensions.");
-        
-        Point result;
-        std::transform(m_data.begin(), m_data.end(), 
-            other.begin(), 
-            std::back_inserter(result.m_data), 
-            std::plus<T>{});
-        return result;
+        auto thisItr = this->begin();
+        auto otherItr = other.begin();
+
+        for (; thisItr != this->end() && otherItr != other.end(); ++thisItr, ++otherItr)
+        {
+            *thisItr += *otherItr;
+        }
+        return *this;
+    }
+
+    bool operator==(const Point<T>& other) const
+    {
+        return this->m_data == other.m_data;
     }
 
     Point operator/(double divisor)
@@ -62,7 +84,6 @@ struct Point
 
     void push_back(T t) { m_data.push_back(t); }
 
-private:
     std::vector<T> m_data;
 };
 
@@ -87,13 +108,27 @@ struct L2DistanceSquared
     }
 };
 
-template <typename T, typename Dummy>
+template <typename T, typename Dummy, unsigned int SEED = 0>
 struct RandomCentroidsInitializer 
 {
+    unsigned int seed;
+
+    RandomCentroidsInitializer()
+    {
+        if constexpr (SEED != 0)
+        {
+            seed = SEED;
+        }
+        else
+        {
+            seed = std::random_device{}();
+        }
+    }
+
     std::vector<T> operator()(int nClusters, const std::vector<T>& points)
     {
         auto pointsCpy = points;
-        std::mt19937 mt{std::random_device{}()};
+        std::mt19937 mt{seed};
         std::shuffle(pointsCpy.begin(), pointsCpy.end(), mt);
         return {pointsCpy.begin(), pointsCpy.begin() + nClusters};
     }   
@@ -101,16 +136,29 @@ struct RandomCentroidsInitializer
 
 
 // NOTE: from https://en.wikipedia.org/wiki/K-means%2B%2B
-template <typename T, typename TDistanceFunction>
+template <typename T, typename TDistanceFunction, unsigned int SEED = 0>
 struct PlusPlusCentroidsInitializer 
 {
+    unsigned int seed;
+    PlusPlusCentroidsInitializer()
+    {
+        if constexpr (SEED != 0)
+        {
+            seed = SEED;
+        } 
+        else
+        {
+            seed = std::random_device{}();
+        }
+    }
+
     std::vector<T> operator()(int nClusters, const std::vector<T>& points)
     {
         std::unordered_map<int, T> centroids;
         centroids.reserve(nClusters);
 
         // Select a first data point at random to be the first centroid.
-        std::mt19937 mt{std::random_device{}()};
+        std::mt19937 mt{seed};
         std::uniform_int_distribution<size_t> get_random_index(0, points.size()-1);
         size_t random_index = get_random_index(mt);
         centroids.insert({random_index, points[random_index]});
@@ -132,10 +180,11 @@ struct PlusPlusCentroidsInitializer
 private:
     double findNearestCentroidDistance(const T& point, const std::unordered_map<int, T>& centroids)
     {
+        TDistanceFunction distanceFunctor{};
         double nearestCentroidDistance = std::numeric_limits<double>::max(); 
         for (const auto& [centroidIndex, centroid]: centroids)
         {
-            if (auto d = TDistanceFunction{}(point, centroid);
+            if (auto d = distanceFunctor(point, centroid);
                 d < nearestCentroidDistance)
             {
                 nearestCentroidDistance = d; 
@@ -162,14 +211,13 @@ private:
 
             const auto& point = points[i];
 
+            // NOTE (keb): This distance must really be the SQUARE of the actual distance.
             double nearestCentroidDistance = findNearestCentroidDistance(point, centroids); 
-
-            double squaredDistance = std::pow(nearestCentroidDistance, 2);
-            normalizingSum += squaredDistance;
+            normalizingSum += nearestCentroidDistance;
             
             assert(nearestCentroidDistance != std::numeric_limits<double>::max() && 
                 "Failed to find the neareast Centroid.");
-            weights.push_back({i, squaredDistance});
+            weights.push_back({i, nearestCentroidDistance});
         }
 
         std::for_each(weights.begin(), weights.end(), 
@@ -181,7 +229,7 @@ private:
     // Selects the next centroids.
     size_t selectWeightedRandomIndex(const std::vector<std::pair<int, double>>& probabilities)
     {
-        std::mt19937 mt {std::random_device{}()};
+        std::mt19937 mt {seed};
         double rand = std::uniform_real_distribution{0.0,1.0}(mt);
         double accumulator = 0.0;
         for (int i = 0; i < probabilities.size(); ++i)
@@ -199,9 +247,12 @@ private:
 };
 
 template <typename T>
-T calculateClusterCentroid(const Cluster<T>& cluster)
+T calculateClusterCentroid(const Cluster<T>& cluster, const T& centroid)
 {
-    assert(!cluster.empty() && "Working with an empty Cluster.");
+    if (cluster.empty())
+    {
+        return centroid;
+    }
 
     T sum = cluster[0];
     for (size_t i = 1; i < cluster.size(); ++i)
@@ -217,12 +268,13 @@ bool updateClustersCentroid(std::vector<T>& centroids,
     const Clusters<T>& clusters, 
     float epsilon)
 {
+    TDistanceFunction distanceFunctor{};
     bool hasConverged = true;
     for (size_t i = 0; i < centroids.size(); ++i)
     {
         const T oldCentroid = centroids[i];
-        centroids[i] = calculateClusterCentroid(clusters[i]);
-        if (TDistanceFunction{}(oldCentroid, centroids[i]) > epsilon)
+        centroids[i] = calculateClusterCentroid(clusters[i], oldCentroid);
+        if (distanceFunctor(oldCentroid, centroids[i]) > epsilon)
         {
             hasConverged = false;
         }
@@ -231,7 +283,7 @@ bool updateClustersCentroid(std::vector<T>& centroids,
 }
 
 template <typename T>
-void clearClusters(Clusters<T> clusters)
+void clearClusters(Clusters<T>& clusters)
 {
     for (auto& cluster : clusters)
     {
@@ -260,8 +312,9 @@ Clusters<T> kMeansClustering(int nClusters, const std::vector<T>& points, float 
         for (const auto& point : points)
         {
             std::vector<double> pointToCentroidDistances;
+            TDistanceFunction distanceFunctor{};
             std::transform(centroids.begin(), centroids.end(), std::back_inserter(pointToCentroidDistances), 
-                [&point](const auto& centroid){ return TDistanceFunction{}(point, centroid); });
+                [&point, &distanceFunctor](const auto& centroid){ return distanceFunctor(point, centroid); });
 
             auto pointClosestCentroidItr = std::min_element(pointToCentroidDistances.begin(), 
                 pointToCentroidDistances.end());
@@ -270,11 +323,10 @@ Clusters<T> kMeansClustering(int nClusters, const std::vector<T>& points, float 
             clusters[closestClusterIndex].push_back(point);
         }
 
-        // Verify if the algorithm has converged.
         hasConverged = updateClustersCentroid<T, TDistanceFunction>(centroids, clusters, epsilon);
     } while (!hasConverged);
 
     return clusters;
 }
 
-}; // namespace Kmeans
+}; // namespace KMeans
