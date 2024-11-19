@@ -26,8 +26,8 @@ int main()
         }
     }
     
-    //KMeans::Clusters<Point> result = KMeans::kMeansClustering<Point, KMeans::L2DistanceSquared<Point>, KMeans::RandomCentroidsInitializer<Point, KMeans::L2DistanceSquared<Point>, 42>> (6, v);
-    KMeans::Clusters<Point> result = KMeans::kMeansClustering<Point, KMeans::L2DistanceSquared<Point>, KMeans::PlusPlusCentroidsInitializer<Point, KMeans::L2DistanceSquared<Point>, 42>> (6, v);
+    //KMeans::Clusters<Point> result = KMeans::kMeansClustering<Point, KMeans::L2Distance<Point>, KMeans::RandomCentroidsInitializer<Point, KMeans::L2Distance<Point>, 42>> (6, v);
+    KMeans::Clusters<Point> result = KMeans::kMeansClustering<Point, KMeans::L2Distance<Point>, KMeans::PlusPlusCentroidsInitializer<Point, KMeans::L2Distance<Point>, 42>> (6, v);
     for (int i = 0; i < result.size(); ++i)
     {
         for (int j = 0; j < result[i].size(); ++j)

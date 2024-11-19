@@ -39,20 +39,20 @@ TEST_F(PointTest, opDivide)
     EXPECT_EQ(Point({200.0, 2.0, 1.4}), pd);
 }
 
-TEST_F(PointTest, L2DistanceSquared)
+TEST_F(PointTest, L2Distance)
 {
-    L2DistanceSquared l2functor{};
+    L2Distance l2functor{};
     double distance = l2functor(p1, p2);
-    EXPECT_EQ(10.0, distance);
+    EXPECT_NEAR(3.1622, distance, 0.0001);
 
     distance = l2functor(p1, p4);
-    EXPECT_EQ(998081.0, distance);
+    EXPECT_NEAR(999.0400, distance, 0.0001);
 }
 
 TEST_F(PointTest, calculateClusterCentroid)
 {
     Cluster<Point<double>> cluster {p1, p2, p5};
-    Point<double> result = calculateClusterCentroid(cluster);
+    Point<double> result = calculateClusterCentroid(cluster, {});
     EXPECT_EQ(Point({334.0, 3.0, 5.0}), result);
 }
 
@@ -60,8 +60,8 @@ TEST_F(PointTest, kMeansClusteringRandomCentroids)
 {
     int nClusters = 3;
     auto result = kMeansClustering<Point<double>, 
-                                   L2DistanceSquared<Point<double>>, 
-                                   RandomCentroidsInitializer<Point<double>, L2DistanceSquared<Point<double>>, 42>>
+                                   L2Distance<Point<double>>, 
+                                   RandomCentroidsInitializer<Point<double>, L2Distance<Point<double>>, 42>>
                                        (nClusters, {p1, p2, p3, p4, p5, p6, p7}, 0.01f); 
     Clusters<Point<double>> expected {{p5}, {p1, p2, p6, p7}, {p3, p4}};
     EXPECT_EQ(expected, result);
@@ -71,8 +71,8 @@ TEST_F(PointTest, kMeansClusteringPlusPlusCentroids)
 {
     int nClusters = 3;
     auto result = kMeansClustering<Point<double>, 
-                                   L2DistanceSquared<Point<double>>, 
-                                   PlusPlusCentroidsInitializer<Point<double>, L2DistanceSquared<Point<double>>, 42>>
+                                   L2Distance<Point<double>>, 
+                                   PlusPlusCentroidsInitializer<Point<double>, L2Distance<Point<double>>, 42>>
                                        (nClusters, {p1, p2, p3, p4, p5, p6, p7}, 0.01f); 
     Clusters<Point<double>> expected {{p1, p2}, {p6, p7}, {p3, p4, p5}};
     EXPECT_EQ(expected, result);

@@ -1,6 +1,7 @@
+#pragma once
+
 #include <algorithm>
 #include <cassert>
-#include <iostream> // TODO (keb): for temporary dedugging.
 #include <random>
 #include <unordered_map>
 #include <utility>
@@ -15,27 +16,17 @@ using Cluster = std::vector<T>;
 template <typename T>
 using Clusters = std::vector<Cluster<T>>;
 
-
 template <typename T = double>
 struct Point
 {
     Point() = default;
-    Point(const std::vector<T>& data) : m_data(data) 
-    {
-
-    };
-    Point(std::vector<T>&& data) : m_data(std::move(data)) 
-    {
-
-    };
+    Point(const std::vector<T>& data) : m_data(data) {};
+    Point(std::vector<T>&& data) : m_data(std::move(data)) {};
     Point(const Point<T>& other)
     {
         this->m_data = other.m_data;
     }
-    Point(Point<T>&& other) : m_data(std::move(other.m_data)) 
-    {
-
-    };
+    Point(Point<T>&& other) : m_data(std::move(other.m_data)) {};
     
     Point& operator=(const Point<T>& other)
     {
@@ -90,7 +81,7 @@ struct Point
 
 
 template <typename T = Point<double>>
-struct L2DistanceSquared
+struct L2Distance
 {
     double operator()(const T& left, const T& right)
     {
@@ -105,7 +96,7 @@ struct L2DistanceSquared
             squaredDistance += std::pow(*leftItr - *rightItr, 2);
         }
 
-        return squaredDistance; 
+        return std::sqrt(squaredDistance); 
     }
 };
 
@@ -213,12 +204,12 @@ private:
             const auto& point = points[i];
 
             // NOTE (keb): This distance must really be the SQUARE of the actual distance.
-            double nearestCentroidDistance = findNearestCentroidDistance(point, centroids); 
-            normalizingSum += nearestCentroidDistance;
+            double nearestCentroidDistanceSquared = std::pow(findNearestCentroidDistance(point, centroids), 2); 
+            normalizingSum += nearestCentroidDistanceSquared;
             
-            assert(nearestCentroidDistance != std::numeric_limits<double>::max() && 
+            assert(nearestCentroidDistanceSquared != std::numeric_limits<double>::max() && 
                 "Failed to find the neareast Centroid.");
-            weights.push_back({i, nearestCentroidDistance});
+            weights.push_back({i, nearestCentroidDistanceSquared});
         }
 
         std::for_each(weights.begin(), weights.end(), 
@@ -317,6 +308,7 @@ template <typename T, typename TDistanceFunction>
 std::vector<std::vector<std::pair<int, double>>> sortInterCentroidDistances(const std::vector<std::vector<double>>& distances)
 {
     std::vector<std::vector<std::pair<int, double>>> sortedDistances (distances.size(), std::vector<std::pair<int, double>> {});
+    // Record the centroid index alongside its distance from the other centroid.
     for (int i = 0; i < distances.size(); ++i)
     {
         for (int j = 0; j < distances.size(); ++j)
@@ -337,7 +329,7 @@ std::vector<std::vector<std::pair<int, double>>> sortInterCentroidDistances(cons
 // NOTE: Lloyd's Algorithm from https://en.wikipedia.org/wiki/K-means_clustering
 template <
     typename T = Point<double>, 
-    typename TDistanceFunction = L2DistanceSquared<T>, 
+    typename TDistanceFunction = L2Distance<T>, 
     typename TCentroidsInitializer = RandomCentroidsInitializer<T, TDistanceFunction>
 >
 Clusters<T> kMeansClustering(int nClusters, const std::vector<T>& points, float epsilon = 0.01)
