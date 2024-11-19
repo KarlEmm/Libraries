@@ -1,5 +1,8 @@
-1. Optimize Lloyd's Algo:
+
+* Optimize Lloyd's Algo:
   a. Use Triangle Inequality;
   b. Use Caching.
 
-2. Update kmeans++ initializer to a scalable version.
+* Update kmeans++ initializer to a scalable version.
+
+* Parallelize multi-thread.

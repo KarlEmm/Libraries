@@ -15,6 +15,7 @@ using Cluster = std::vector<T>;
 template <typename T>
 using Clusters = std::vector<Cluster<T>>;
 
+
 template <typename T = double>
 struct Point
 {
@@ -289,6 +290,23 @@ void clearClusters(Clusters<T>& clusters)
     {
         cluster.clear();
     }
+}
+
+template <typename T, typename TDistanceFunction>
+std::vector<std::vector<double>> calculateInterCentroidDistances(const std::vector<T>& centroids)
+{
+    std::vector<std::vector<double>> distances (centroids.size(), std::vector(centroids.size(), 0.0));
+    TDistanceFunction distanceFunctor {};
+    for (int i = 0; i < centroids.size(); ++i)
+    {
+        for (int j = i+1; j < centroids.size(); ++j)
+        {
+            double d = distanceFunctor(centroids[i], centroids[j]);
+            distances[i][j] = d;
+            distances[j][i] = d;
+        }
+    }
+    return distances;
 }
 
 // NOTE: Lloyd's Algorithm from https://en.wikipedia.org/wiki/K-means_clustering
