@@ -292,6 +292,8 @@ void clearClusters(Clusters<T>& clusters)
     }
 }
 
+// Triangle Inequality Optimization - COMPARING MEANS 
+// (https://www.researchgate.net/publication/225253148_Acceleration_of_K-Means_and_Related_Clustering_Algorithms)
 template <typename T, typename TDistanceFunction>
 std::vector<std::vector<double>> calculateInterCentroidDistances(const std::vector<T>& centroids)
 {
@@ -309,6 +311,29 @@ std::vector<std::vector<double>> calculateInterCentroidDistances(const std::vect
     return distances;
 }
 
+// Triangle Inequality Optimization - SORTING MEANS 
+// (https://www.researchgate.net/publication/225253148_Acceleration_of_K-Means_and_Related_Clustering_Algorithms)
+template <typename T, typename TDistanceFunction>
+std::vector<std::vector<std::pair<int, double>>> sortInterCentroidDistances(const std::vector<std::vector<double>>& distances)
+{
+    std::vector<std::vector<std::pair<int, double>>> sortedDistances (distances.size(), std::vector<std::pair<int, double>> {});
+    for (int i = 0; i < distances.size(); ++i)
+    {
+        for (int j = 0; j < distances.size(); ++j)
+        {
+            sortedDistances[i].push_back({j, distances[i][j]});
+        }
+    }
+
+    for (int i = 0; i < sortedDistances.size(); ++i)
+    {
+        std::sort(sortedDistances[i].begin(), sortedDistances[i].end(), 
+            [](const auto& left, const auto& right){return left.second < right.second;});
+    }
+
+    return sortedDistances;
+}
+
 // NOTE: Lloyd's Algorithm from https://en.wikipedia.org/wiki/K-means_clustering
 template <
     typename T = Point<double>, 
@@ -320,25 +345,46 @@ Clusters<T> kMeansClustering(int nClusters, const std::vector<T>& points, float 
     assert(nClusters <= points.size() && "Requesting more clusters than there are data points.");
     std::vector<T> centroids = TCentroidsInitializer{}(nClusters, points);
     Clusters<T> clusters(nClusters, std::vector<T>());
+    std::vector<int> pointToClusterIndex (points.size(), 0);
 
     bool hasConverged {false};
     do
     {
         clearClusters(clusters);
 
+        auto interCentroidDistances = calculateInterCentroidDistances<T, TDistanceFunction>(centroids);
+        auto sortedInterCentroidDistances = sortInterCentroidDistances<T, TDistanceFunction>(interCentroidDistances);
+
         // Assign each point to the cluster with the nearest centroid.
-        for (const auto& point : points)
+        for (int pointIndex = 0; pointIndex < points.size(); ++pointIndex)
         {
-            std::vector<double> pointToCentroidDistances;
+            const auto& point = points[pointIndex];
+
             TDistanceFunction distanceFunctor{};
-            std::transform(centroids.begin(), centroids.end(), std::back_inserter(pointToCentroidDistances), 
-                [&point, &distanceFunctor](const auto& centroid){ return distanceFunctor(point, centroid); });
 
-            auto pointClosestCentroidItr = std::min_element(pointToCentroidDistances.begin(), 
-                pointToCentroidDistances.end());
+            int originalNearestClusterIndex = pointToClusterIndex[pointIndex];
+            int& nearestClusterIndex = pointToClusterIndex[pointIndex];
+            
+            double originalNearestClusterDistance = distanceFunctor(point, centroids[originalNearestClusterIndex]);
+            double nearestClusterDistance = originalNearestClusterDistance;
 
-            std::ptrdiff_t closestClusterIndex = std::distance(pointToCentroidDistances.begin(), pointClosestCentroidItr);
-            clusters[closestClusterIndex].push_back(point);
+            // centroidIndex 0 is already processed above in nearestClusterIndex.
+            for (int centroidIndex = 1; centroidIndex < centroids.size(); ++centroidIndex)
+            {
+                int nextCentroid = sortedInterCentroidDistances[originalNearestClusterIndex][centroidIndex].first;
+                if (interCentroidDistances[originalNearestClusterIndex][nextCentroid] >= 2*originalNearestClusterDistance)
+                {
+                    break;
+                }
+                auto d = distanceFunctor(point, centroids[nextCentroid]);
+                if (d < nearestClusterDistance)
+                {
+                    nearestClusterDistance = d;
+                    nearestClusterIndex = nextCentroid;
+                }
+            }
+
+            clusters[nearestClusterIndex].push_back(point);
         }
 
         hasConverged = updateClustersCentroid<T, TDistanceFunction>(centroids, clusters, epsilon);

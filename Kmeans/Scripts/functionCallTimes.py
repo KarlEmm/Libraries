@@ -41,7 +41,7 @@ for index, file in enumerate(profiling_files):
         print("Error:", e)
         print("stderr:", e.stderr)
 
-with open(join(profiling_directory, 'Timings' ,'kMeansClusteringPPSTTimings.data'), "w") as f:
+with open(join(profiling_directory, 'Timings' ,'kMeansClusteringPPSTTITimings.data'), "w") as f:
     f.write(str(data))
 
 plt.hist(data, bins=50)
