@@ -100,6 +100,27 @@ struct L2Distance
     }
 };
 
+// NOTE (keb): https://en.wikipedia.org/wiki/Earth_mover%27s_distance
+template <typename T = Point<double>>
+struct EMDDistance
+{
+    double operator()(const T& left, const T& right)
+    {
+        assert(left.size() == right.size() && "Can't compare vectors of different sizes.");
+        size_t sz = left.size();
+
+        double totalDistance = 0.0; 
+        double previousDistance = 0.0;
+        for (int i = 1; i <= sz; ++i)
+        {
+            previousDistance = std::abs(left[i-1] + previousDistance - right[i-1]);
+            totalDistance += previousDistance;
+        }
+
+        return totalDistance;
+    }
+};
+
 template <typename T, typename Dummy, unsigned int SEED = 0>
 struct RandomCentroidsInitializer 
 {
