@@ -149,7 +149,7 @@ struct RandomCentroidsInitializer
 
 
 // NOTE: from https://en.wikipedia.org/wiki/K-means%2B%2B
-template <typename T, typename TDistanceFunction, unsigned int SEED = 0>
+template <typename T, typename TDistanceFunction, unsigned int SEED = 0, typename TContainer = std::vector<T>>
 struct PlusPlusCentroidsInitializer 
 {
     unsigned int seed;
@@ -165,7 +165,7 @@ struct PlusPlusCentroidsInitializer
         }
     }
 
-    std::vector<T> operator()(int nClusters, const std::vector<T>& points)
+    std::vector<T> operator()(int nClusters, const TContainer& points)
     {
         std::unordered_map<int, T> centroids;
         centroids.reserve(nClusters);
@@ -211,7 +211,7 @@ private:
     // The farther it is, the more chances it has to be selected.
     std::vector<std::pair<int, double>> probabilitiesToBeNextCentroid(
         const std::unordered_map<int, T>& centroids,
-        const std::vector<T>& points)
+        const TContainer& points)
     {
         double normalizingSum = 0.0;
         std::vector<std::pair<int, double>> weights;
@@ -351,9 +351,10 @@ std::vector<std::vector<std::pair<int, double>>> sortInterCentroidDistances(cons
 template <
     typename T = Point<double>, 
     typename TDistanceFunction = L2Distance<T>, 
-    typename TCentroidsInitializer = RandomCentroidsInitializer<T, TDistanceFunction>
+    typename TCentroidsInitializer = RandomCentroidsInitializer<T, TDistanceFunction>,
+    typename TContainer = std::vector<T>
 >
-Clusters<T> kMeansClustering(int nClusters, const std::vector<T>& points, float epsilon = 0.01)
+Clusters<T> kMeansClustering(int nClusters, const TContainer& points, float epsilon = 0.01)
 {
     assert(nClusters <= points.size() && "Requesting more clusters than there are data points.");
     std::vector<T> centroids = TCentroidsInitializer{}(nClusters, points);
