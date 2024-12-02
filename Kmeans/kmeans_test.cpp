@@ -63,7 +63,8 @@ TEST_F(PointTest, kMeansClusteringRandomCentroids)
                                    L2Distance<Point<double>>, 
                                    RandomCentroidsInitializer<Point<double>, L2Distance<Point<double>>, 42>>
                                        (nClusters, {p1, p2, p3, p4, p5, p6, p7}, 0.01f); 
-    Clusters<Point<double>> expected {{p5}, {p1, p2, p6, p7}, {p3, p4}};
+    // NOTE (keb): p5 | p1, p2, p6, p7 | p3, p4
+    std::vector<Point<double>> expected {Point({1000, 2, 10}), Point({48, 13, 6.25}), Point({1000, 10.5, 9.5})};
     EXPECT_EQ(expected, result);
 }
 
@@ -74,6 +75,6 @@ TEST_F(PointTest, kMeansClusteringPlusPlusCentroids)
                                    L2Distance<Point<double>>, 
                                    PlusPlusCentroidsInitializer<Point<double>, L2Distance<Point<double>>, 42>>
                                        (nClusters, {p1, p2, p3, p4, p5, p6, p7}, 0.01f); 
-    Clusters<Point<double>> expected {{p1, p2}, {p6, p7}, {p3, p4, p5}};
+    std::vector<Point<double>> expected {Point({2, 3.5, 2.5}), Point({95, 22.5, 10}), Point({1000, 23/3.0, 29/3.0})};
     EXPECT_EQ(expected, result);
 }

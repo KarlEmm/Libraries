@@ -1,5 +1,10 @@
 #include <ehs.hpp>
 
+extern "C"
+{
+    #include <hand_index.h>
+}
+
 #include <pokerTypes.hpp>
 
 #include <chrono>
@@ -12,41 +17,38 @@
 int main()
 {
     using namespace PokerTypes;
+        
+    std::array<hand_indexer_t, 4> canonical_indexers;
+    assert(hand_indexer_init(1, (const uint8_t[]){2}, &canonical_indexers[0]));
+    assert(hand_indexer_init(2, (const uint8_t[]){2,3}, &canonical_indexers[1]));
+    assert(hand_indexer_init(3, (const uint8_t[]){2,3,1}, &canonical_indexers[2]));
+    assert(hand_indexer_init(4, (const uint8_t[]){2,3,1,1}, &canonical_indexers[3]));
 
     constexpr size_t HugePageSize = 2 * 1024 * 1024;
     constexpr uint64_t _7C2 = 21;
-    constexpr uint64_t nCanonicalHands = 2'428'287'420;
-    constexpr uint64_t numElements = nCanonicalHands*_7C2;
-    constexpr size_t fileSize = numElements * sizeof(uint16_t);
+    uint64_t nCanonicalHands = canonical_indexers[3].round_size[3];
+    uint64_t numElements = nCanonicalHands*_7C2;
+    size_t fileSizeEHS = numElements * sizeof(uint16_t);
 
-    FILE* fd = fopen("ehs.dat", "w+");
-    if (fseek(fd, fileSize-1, SEEK_SET) != 0)
+    FILE* fdEHS = fopen("ehs.dat", "w+x");
+    if (fseek(fdEHS, fileSizeEHS-1, SEEK_SET) != 0)
     {
         std::cerr << "fseek failed." << std::endl;
         std::cerr << errno << std::endl;
         return 1;
     }
 
-    if (fwrite("\0", 1, 1, fd) < 1)
+    if (fwrite("\0", 1, 1, fdEHS) < 1)
     {
         std::cerr << "fwrite failed." << std::endl;
         std::cerr << errno << std::endl;
         return 1;
     }
 
-    uint16_t* riverEHS = (uint16_t*)mmap(NULL, fileSize, PROT_READ | PROT_WRITE,
-                                        MAP_SHARED, fileno(fd), 0);
-    fclose(fd);
+    uint16_t* riverEHS = (uint16_t*)mmap(NULL, fileSizeEHS, PROT_READ | PROT_WRITE,
+                                        MAP_SHARED, fileno(fdEHS), 0);
+    fclose(fdEHS);
 
-
-    // uint8_t cards[7] = {1,5,9,13,17,21,25};
-    // int u0 = HR[53+cards[0]];
-    // int u1 = HR[u0+cards[1]];
-    // int u2 = HR[u1+cards[2]];
-    // int u3 = HR[u2+cards[3]];
-    // int u4 = HR[u3+cards[4]]; // NOTE (keb): HR[u4] is the 5-card hand rank
-    // int u5 = HR[u4+cards[5]]; // NOTE (keb): HR[u5] is the 6-card hand rank
-    // int u6 = HR[u5+cards[6]]; // NOTE (keb): u6 is the 7-card hand rank
 
     if (riverEHS == MAP_FAILED) {
         std::cerr << "Memory allocation failed!" << std::endl;
@@ -54,60 +56,80 @@ int main()
         return 1;
     }
 
-    auto start = std::chrono::high_resolution_clock::now();
-
-    // EHS::generateEHSRiver(riverEHS);
     EHS::generateEHSRiverCanonical(riverEHS);
-    // for (int i = 0; i < 100'000; ++i)
-    // {
-    //     deck.shuffle(); 
-    //     std::array<PokerTypes::Card, 2> myCards {deck[0], deck[1]};
-    //     std::array<PokerTypes::Card, 5> boardCards {deck[2], deck[3], deck[4], deck[5], deck[6]};
-    //     EHS::getEHS(myCards, boardCards);
-    // }
-    // hand_indexer_t river_indexer;
-    // assert(hand_indexer_init(4, (const uint8_t[]){2,3,1,1}, &river_indexer));
-    // uint8_t cards[7];
-    // hand_unindex(&river_indexer, 3, 0, cards);
-    // std::bitset<52> deck;
-    // for (int i = 0; i < 7; ++i)
-    // {
-    //     deck.flip(cards[i]);
-    // }
-    // std::cout << "Manual EHS: " << EHS::getEHS({Card(cards[1]), Card(cards[4])}, {Card(cards[5]), Card(cards[3]),Card(cards[2]), Card(cards[0]),Card(cards[6])}, deck) << std::endl;
-    
-    // hand_unindex(&river_indexer, 3, 3, cards);
-    // deck.reset();
-    // for (int i = 0; i < 7; ++i)
-    // {
-    //     deck.flip(cards[i]);
-    // }
-    // std::cout << "Manual EHS: " << EHS::getEHS({Card(cards[0]), Card(cards[1])}, {Card(cards[2]), Card(cards[3]),Card(cards[4]), Card(cards[5]),Card(cards[6])}, deck) << std::endl;
-    
-    // hand_unindex(&river_indexer, 3, 6, cards);
-    // deck.reset();
-    // for (int i = 0; i < 7; ++i)
-    // {
-    //     deck.flip(cards[i]);
-    // }
-    // std::cout << "Manual EHS: " << EHS::getEHS({Card(cards[0]), Card(cards[1])}, {Card(cards[2]), Card(cards[3]),Card(cards[4]), Card(cards[5]),Card(cards[6])}, deck) << std::endl;
-    
-    // hand_unindex(&river_indexer, 3, 9, cards);
-    // deck.reset();
-    // for (int i = 0; i < 7; ++i)
-    // {
-    //     deck.flip(cards[i]);
-    // }
-    // std::cout << "Manual EHS: " << EHS::getEHS({Card(cards[0]), Card(cards[1])}, {Card(cards[2]), Card(cards[3]),Card(cards[4]), Card(cards[5]),Card(cards[6])}, deck) << std::endl;
 
-    // std::cout << "MMAP EHS: " << riverEHS[10] << std::endl;
-    // std::cout << "MMAP EHS: " << riverEHS[63] << std::endl;
-    // std::cout << "MMAP EHS: " << riverEHS[126] << std::endl;
-    // std::cout << "MMAP EHS: " << riverEHS[189] << std::endl;
 
-    auto end = std::chrono::high_resolution_clock::now();
-    std::cout << std::chrono::duration<double>(end-start).count() << std::endl;
+    // ======================= TURN HISTOGRAMS =========================== 
+    constexpr uint64_t _6C2 = 15;
+    nCanonicalHands = canonical_indexers[2].round_size[2];
+    numElements = nCanonicalHands*_6C2;
+    size_t fileSizeTurn = numElements * sizeof(PokerTypes::Histogram);
     
-    // Don't forget to free the memory when done
-    munmap(riverEHS, numElements * sizeof(uint16_t));
+    FILE* fdTurn = fopen("turnHistograms.dat", "w+x");
+    if (fseek(fdTurn, fileSizeTurn-1, SEEK_SET) != 0)
+    {
+        std::cerr << "fseek failed." << std::endl;
+        std::cerr << errno << std::endl;
+        return 1;
+    }
+
+    if (fwrite("\0", 1, 1, fdTurn) < 1)
+    {
+        std::cerr << "fwrite failed." << std::endl;
+        std::cerr << errno << std::endl;
+        return 1;
+    }
+
+    Histogram* turnHistograms = (Histogram*)mmap(NULL, fileSizeTurn, PROT_READ | PROT_WRITE,
+                                        MAP_SHARED, fileno(fdTurn), 0);
+    fclose(fdTurn);
+
+    if (turnHistograms == MAP_FAILED) {
+        std::cerr << "Memory allocation failed!" << std::endl;
+        std::cerr << errno << std::endl;
+        return 1;
+    }
+
+    EHS::generateTurnHistograms(PokerTypes::BettingRound::Turn, riverEHS, turnHistograms);
+
+    EHS::getTurnBuckets(200, turnHistograms);
+    
+    // ======================= FLOP HISTOGRAMS =========================== 
+    constexpr uint64_t _5C2 = 10;
+    nCanonicalHands = canonical_indexers[1].round_size[1];
+    numElements = nCanonicalHands*_5C2;
+    size_t fileSizeFlop = numElements * sizeof(PokerTypes::Histogram);
+    
+    FILE* fdFlop = fopen("flopHistograms.dat", "w+x");
+    if (fseek(fdFlop, fileSizeFlop-1, SEEK_SET) != 0)
+    {
+        std::cerr << "fseek failed." << std::endl;
+        std::cerr << errno << std::endl;
+        return 1;
+    }
+
+    if (fwrite("\0", 1, 1, fdFlop) < 1)
+    {
+        std::cerr << "fwrite failed." << std::endl;
+        std::cerr << errno << std::endl;
+        return 1;
+    }
+
+    Histogram* flopHistograms = (Histogram*)mmap(NULL, fileSizeFlop, PROT_READ | PROT_WRITE,
+                                        MAP_SHARED, fileno(fdFlop), 0);
+    fclose(fdFlop);
+
+    if (flopHistograms == MAP_FAILED) {
+        std::cerr << "Memory allocation failed!" << std::endl;
+        std::cerr << errno << std::endl;
+        return 1;
+    }
+    
+    EHS::generateFlopHistograms(PokerTypes::BettingRound::Flop, turnHistograms, flopHistograms);
+
+    EHS::getFlopBuckets(200, flopHistograms);
+
+    // ================ FREE ===================
+    munmap(flopHistograms, fileSizeFlop);
+    munmap(turnHistograms, fileSizeTurn);
 }

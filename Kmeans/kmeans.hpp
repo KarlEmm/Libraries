@@ -121,6 +121,24 @@ struct EMDDistance
     }
 };
 
+template <typename T, typename TDistanceFunction>
+int findNearestCentroidIndex(const std::vector<T>& centroids, const T& point)
+{
+    TDistanceFunction distanceFunctor{};
+    int nearestCentroidIndex = -1;
+    int nearestCentroidDistance = std::numeric_limits<double>::max();
+    for (int i = 0; i < centroids.size(); ++i)
+    {
+        if (auto d = distanceFunctor(centroids[i], point); d < nearestCentroidDistance)
+        {
+            nearestCentroidIndex = i;
+            nearestCentroidDistance = d;
+        }
+    }
+
+    return nearestCentroidIndex;
+}
+
 template <typename T, typename Dummy, unsigned int SEED = 0>
 struct RandomCentroidsInitializer 
 {
@@ -348,13 +366,14 @@ std::vector<std::vector<std::pair<int, double>>> sortInterCentroidDistances(cons
 }
 
 // NOTE: Lloyd's Algorithm from https://en.wikipedia.org/wiki/K-means_clustering
+// returns the representative centroids.
 template <
     typename T = Point<double>, 
     typename TDistanceFunction = L2Distance<T>, 
     typename TCentroidsInitializer = RandomCentroidsInitializer<T, TDistanceFunction>,
     typename TContainer = std::vector<T>
 >
-Clusters<T> kMeansClustering(int nClusters, const TContainer& points, float epsilon = 0.01)
+std::vector<T> kMeansClustering(int nClusters, const TContainer& points, float epsilon = 0.01)
 {
     assert(nClusters <= points.size() && "Requesting more clusters than there are data points.");
     std::vector<T> centroids = TCentroidsInitializer{}(nClusters, points);
@@ -404,7 +423,7 @@ Clusters<T> kMeansClustering(int nClusters, const TContainer& points, float epsi
         hasConverged = updateClustersCentroid<T, TDistanceFunction>(centroids, clusters, epsilon);
     } while (!hasConverged);
 
-    return clusters;
+    return centroids;
 }
 
 }; // namespace KMeans

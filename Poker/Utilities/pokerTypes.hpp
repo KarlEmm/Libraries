@@ -9,6 +9,36 @@
 namespace PokerTypes 
 {
 
+struct Histogram
+{
+	Histogram& operator+=(const Histogram& other)
+	{
+        auto thisItr = m_data.begin();
+        auto otherItr = other.m_data.begin();
+
+        for (; thisItr != m_data.end() && otherItr != other.m_data.end(); ++thisItr, ++otherItr)
+        {
+            *thisItr += *otherItr;
+        }
+        return *this;
+	}
+    
+	Histogram operator/(double divisor)
+    {
+        Histogram result;
+		for (int i = 0; i < m_data.size(); ++i)
+		{
+            result.m_data[i] = (m_data[i] / divisor);
+        }
+        return result;
+    }
+
+	size_t size() const { return m_data.size(); }
+	uint8_t& operator[](size_t index) { return m_data[index]; }
+	const uint8_t& operator[](size_t index) const { return m_data[index]; }
+
+	std::array<uint8_t, 20> m_data;
+};
 
 namespace Constants
 {
