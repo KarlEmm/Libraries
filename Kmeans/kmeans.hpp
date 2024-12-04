@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <iostream> // TODO (keb): remove, only for debugging
 #include <random>
 #include <unordered_map>
 #include <utility>
@@ -55,6 +57,15 @@ struct Point
     bool operator==(const Point<T>& other) const
     {
         return this->m_data == other.m_data;
+    }
+    
+    Point& operator*=(double factor)
+    {
+        for (auto& e : m_data)
+        {
+            e *= factor;
+        }
+        return *this;
     }
 
     Point operator/(double divisor)
@@ -121,12 +132,12 @@ struct EMDDistance
     }
 };
 
-template <typename T, typename TDistanceFunction>
-int findNearestCentroidIndex(const std::vector<T>& centroids, const T& point)
+template <typename T, typename TDistanceFunction, typename TContainer>
+std::pair<int, double> findNearestCentroid(const TContainer& centroids, const T& point)
 {
     TDistanceFunction distanceFunctor{};
     int nearestCentroidIndex = -1;
-    int nearestCentroidDistance = std::numeric_limits<double>::max();
+    double nearestCentroidDistance = std::numeric_limits<double>::max();
     for (int i = 0; i < centroids.size(); ++i)
     {
         if (auto d = distanceFunctor(centroids[i], point); d < nearestCentroidDistance)
@@ -135,182 +146,22 @@ int findNearestCentroidIndex(const std::vector<T>& centroids, const T& point)
             nearestCentroidDistance = d;
         }
     }
+    
+    assert(nearestCentroidIndex != -1 && "Couldn't find a nearest centroid.");
 
-    return nearestCentroidIndex;
+    return {nearestCentroidIndex, nearestCentroidDistance};
 }
 
-template <typename T, typename Dummy, unsigned int SEED = 0>
-struct RandomCentroidsInitializer 
+template <typename T, typename TDistanceFunction, typename TContainer>
+double clusterCost(const TContainer& points, const std::vector<T>& centroids)
 {
-    unsigned int seed;
-
-    RandomCentroidsInitializer()
+    double result = 0.0;
+    for (const auto& point : points)
     {
-        if constexpr (SEED != 0)
-        {
-            seed = SEED;
-        }
-        else
-        {
-            seed = std::random_device{}();
-        }
+        auto [nearestCentroidIndex, nearestCentroidDistance] = findNearestCentroid<T, TDistanceFunction>(centroids, point);
+        result += std::pow(nearestCentroidDistance, 2); 
     }
-
-    std::vector<T> operator()(int nClusters, const std::vector<T>& points)
-    {
-        auto pointsCpy = points;
-        std::mt19937 mt{seed};
-        std::shuffle(pointsCpy.begin(), pointsCpy.end(), mt);
-        return {pointsCpy.begin(), pointsCpy.begin() + nClusters};
-    }   
-};
-
-
-// NOTE: from https://en.wikipedia.org/wiki/K-means%2B%2B
-template <typename T, typename TDistanceFunction, unsigned int SEED = 0, typename TContainer = std::vector<T>>
-struct PlusPlusCentroidsInitializer 
-{
-    unsigned int seed;
-    PlusPlusCentroidsInitializer()
-    {
-        if constexpr (SEED != 0)
-        {
-            seed = SEED;
-        } 
-        else
-        {
-            seed = std::random_device{}();
-        }
-    }
-
-    std::vector<T> operator()(int nClusters, const TContainer& points)
-    {
-        std::unordered_map<int, T> centroids;
-        centroids.reserve(nClusters);
-
-        // Select a first data point at random to be the first centroid.
-        std::mt19937 mt{seed};
-        std::uniform_int_distribution<size_t> get_random_index(0, points.size()-1);
-        size_t random_index = get_random_index(mt);
-        centroids.insert({random_index, points[random_index]});
-
-        while (centroids.size() != nClusters)
-        {
-            std::vector<std::pair<int, double>> probabilities = probabilitiesToBeNextCentroid(centroids, points);
-            size_t random_index = selectWeightedRandomIndex(probabilities);
-            centroids.insert({random_index, points[random_index]});
-        }
-
-        std::vector<T> result;
-        std::transform(centroids.begin(), centroids.end(),
-            std::back_inserter(result),
-            [](const std::pair<int, T>& kvPair) {return kvPair.second;});
-        return result;    
-    }
-
-private:
-    double findNearestCentroidDistance(const T& point, const std::unordered_map<int, T>& centroids)
-    {
-        TDistanceFunction distanceFunctor{};
-        double nearestCentroidDistance = std::numeric_limits<double>::max(); 
-        for (const auto& [centroidIndex, centroid]: centroids)
-        {
-            if (auto d = distanceFunctor(point, centroid);
-                d < nearestCentroidDistance)
-            {
-                nearestCentroidDistance = d; 
-            }
-        }
-        return nearestCentroidDistance;
-    }
-
-    // For each candidate point to be the next centroid, compute the probability
-    // for it to be selected based on how far it is from its closest centroid.
-    // The farther it is, the more chances it has to be selected.
-    std::vector<std::pair<int, double>> probabilitiesToBeNextCentroid(
-        const std::unordered_map<int, T>& centroids,
-        const TContainer& points)
-    {
-        double normalizingSum = 0.0;
-        std::vector<std::pair<int, double>> weights;
-        for (int i = 0; i < points.size(); ++i)
-        {
-            if (centroids.find(i) != centroids.end())
-            {
-                continue;
-            }
-
-            const auto& point = points[i];
-
-            // NOTE (keb): This distance must really be the SQUARE of the actual distance.
-            double nearestCentroidDistanceSquared = std::pow(findNearestCentroidDistance(point, centroids), 2); 
-            normalizingSum += nearestCentroidDistanceSquared;
-            
-            assert(nearestCentroidDistanceSquared != std::numeric_limits<double>::max() && 
-                "Failed to find the neareast Centroid.");
-            weights.push_back({i, nearestCentroidDistanceSquared});
-        }
-
-        std::for_each(weights.begin(), weights.end(), 
-            [&normalizingSum](auto& weight){weight.second = weight.second/normalizingSum;});
-
-        return weights;
-    }
-
-    // Selects the next centroids.
-    size_t selectWeightedRandomIndex(const std::vector<std::pair<int, double>>& probabilities)
-    {
-        std::mt19937 mt {seed};
-        double rand = std::uniform_real_distribution{0.0,1.0}(mt);
-        double accumulator = 0.0;
-        for (int i = 0; i < probabilities.size(); ++i)
-        {
-            accumulator += probabilities[i].second;
-            if (rand <= accumulator)
-            {
-                return probabilities[i].first;
-            }
-        }
-
-        assert(false && "Error in probabilities computation.");
-        std::unreachable();
-    }
-};
-
-template <typename T>
-T calculateClusterCentroid(const Cluster<T>& cluster, const T& centroid)
-{
-    if (cluster.empty())
-    {
-        return centroid;
-    }
-
-    T sum = cluster[0];
-    for (size_t i = 1; i < cluster.size(); ++i)
-    {
-        sum += cluster[i];
-    }
-
-    return sum / cluster.size();
-}
-
-template <typename T, typename TDistanceFunction>
-bool updateClustersCentroid(std::vector<T>& centroids, 
-    const Clusters<T>& clusters, 
-    float epsilon)
-{
-    TDistanceFunction distanceFunctor{};
-    bool hasConverged = true;
-    for (size_t i = 0; i < centroids.size(); ++i)
-    {
-        const T oldCentroid = centroids[i];
-        centroids[i] = calculateClusterCentroid(clusters[i], oldCentroid);
-        if (distanceFunctor(oldCentroid, centroids[i]) > epsilon)
-        {
-            hasConverged = false;
-        }
-    }
-    return hasConverged;
+    return result;
 }
 
 template <typename T>
@@ -365,6 +216,232 @@ std::vector<std::vector<std::pair<int, double>>> sortInterCentroidDistances(cons
     return sortedDistances;
 }
 
+template <
+    typename T = Point<double>, 
+    typename TDistanceFunction = L2Distance<T>, 
+    typename TContainer = std::vector<T>
+>
+void assignPointsToCluster(Clusters<T>& clusters, 
+    std::vector<int>& pointToClusterIndex,
+    const std::vector<T>& centroids,
+    const TContainer& points)
+{
+    clearClusters(clusters);
+
+    auto interCentroidDistances = calculateInterCentroidDistances<T, TDistanceFunction>(centroids);
+    auto sortedInterCentroidDistances = sortInterCentroidDistances<T, TDistanceFunction>(interCentroidDistances);
+
+    // Assign each point to the cluster with the nearest centroid.
+    for (int pointIndex = 0; pointIndex < points.size(); ++pointIndex)
+    {
+        const auto& point = points[pointIndex];
+
+        TDistanceFunction distanceFunctor{};
+
+        int& nearestClusterIndex = pointToClusterIndex[pointIndex];
+        const int originalNearestClusterIndex = nearestClusterIndex;
+        
+        double originalNearestClusterDistance = distanceFunctor(point, centroids[originalNearestClusterIndex]);
+        double nearestClusterDistance = originalNearestClusterDistance;
+
+        // centroidIndex 0 is already processed above in nearestClusterIndex.
+        for (int centroidIndex = 1; centroidIndex < centroids.size(); ++centroidIndex)
+        {
+            int nextCentroid = sortedInterCentroidDistances[originalNearestClusterIndex][centroidIndex].first;
+            if (interCentroidDistances[originalNearestClusterIndex][nextCentroid] >= 2*originalNearestClusterDistance)
+            {
+                break;
+            }
+            auto d = distanceFunctor(point, centroids[nextCentroid]);
+            if (d < nearestClusterDistance)
+            {
+                nearestClusterDistance = d;
+                nearestClusterIndex = nextCentroid;
+            }
+        }
+
+        clusters[nearestClusterIndex].push_back(point);
+    }
+}
+
+template <typename T, typename Dummy, unsigned int SEED = 0>
+struct RandomCentroidsInitializer 
+{
+    unsigned int seed;
+
+    RandomCentroidsInitializer()
+    {
+        if constexpr (SEED != 0)
+        {
+            seed = SEED;
+        }
+        else
+        {
+            seed = std::random_device{}();
+        }
+    }
+
+    std::vector<T> operator()(int nClusters, const std::vector<T>& points)
+    {
+        auto pointsCpy = points;
+        std::mt19937 mt{seed};
+        std::shuffle(pointsCpy.begin(), pointsCpy.end(), mt);
+        return {pointsCpy.begin(), pointsCpy.begin() + nClusters};
+    }   
+};
+
+
+
+// NOTE: from https://en.wikipedia.org/wiki/K-means%2B%2B
+template <typename T, typename TDistanceFunction, unsigned int SEED = 0, typename TContainer = std::vector<T>>
+struct PlusPlusCentroidsInitializer 
+{
+    unsigned int seed;
+    PlusPlusCentroidsInitializer()
+    {
+        if constexpr (SEED != 0)
+        {
+            seed = SEED;
+        } 
+        else
+        {
+            seed = std::random_device{}();
+        }
+    }
+
+    std::vector<T> operator()(int nClusters, const TContainer& points)
+    {
+        std::unordered_map<int, T> centroids;
+        centroids.reserve(nClusters);
+
+        // Select a first data point at random to be the first centroid.
+        std::mt19937 mt{seed};
+        std::uniform_int_distribution<size_t> get_random_index(0, points.size()-1);
+        size_t random_index = get_random_index(mt);
+        centroids.insert({random_index, points[random_index]});
+
+        while (centroids.size() != nClusters)
+        {
+            std::unordered_map<int, double> probabilities = probabilitiesToBeNextCentroid(centroids, points);
+            size_t random_index = selectWeightedRandomIndex(probabilities);
+            centroids.insert({random_index, points[random_index]});
+        }
+
+        std::vector<T> result;
+        std::transform(centroids.begin(), centroids.end(),
+            std::back_inserter(result),
+            [](const std::pair<int, T>& kvPair) {return kvPair.second;});
+        return result;    
+    }
+
+private:
+    double findNearestCentroidDistance(const T& point, const std::unordered_map<int, T>& centroids)
+    {
+        TDistanceFunction distanceFunctor{};
+        double nearestCentroidDistance = std::numeric_limits<double>::max(); 
+        for (const auto& [centroidIndex, centroid]: centroids)
+        {
+            if (auto d = distanceFunctor(point, centroid);
+                d < nearestCentroidDistance)
+            {
+                nearestCentroidDistance = d; 
+            }
+        }
+        return nearestCentroidDistance;
+    }
+
+    // For each candidate point to be the next centroid, compute the probability
+    // for it to be selected based on how far it is from its closest centroid.
+    // The farther it is, the more chances it has to be selected.
+    std::unordered_map<int, double> probabilitiesToBeNextCentroid(
+        const std::unordered_map<int, T>& centroids,
+        const TContainer& points,
+        const int lambda = 1)
+    {
+        double normalizingSum = 0.0;
+        std::unordered_map<int, double> weights;
+        for (int i = 0; i < points.size(); ++i)
+        {
+            if (centroids.find(i) != centroids.end())
+            {
+                continue;
+            }
+
+            const auto& point = points[i];
+
+            // NOTE (keb): This distance must really be the SQUARE of the actual distance.
+            double nearestCentroidDistanceSquared = lambda * std::pow(findNearestCentroidDistance(point, centroids), 2); 
+            normalizingSum += nearestCentroidDistanceSquared;
+            
+            assert(nearestCentroidDistanceSquared != std::numeric_limits<double>::max() && 
+                "Failed to find the neareast Centroid.");
+            weights.insert({i, nearestCentroidDistanceSquared});
+        }
+
+        std::for_each(weights.begin(), weights.end(), 
+            [&normalizingSum](auto& weight){weight.second = weight.second/normalizingSum;});
+
+        return weights;
+    }
+
+    // Selects the next centroids.
+    size_t selectWeightedRandomIndex(const std::unordered_map<int, double>& probabilities)
+    {
+        std::mt19937 mt {seed};
+        double rand = std::uniform_real_distribution{0.0,1.0}(mt);
+        double accumulator = 0.0;
+        for (const auto& [pointIndex, probability] : probabilities)
+        {
+            accumulator += probability;
+            if (rand <= accumulator)
+            {
+                return pointIndex;
+            }
+        }
+
+        assert(false && "Error in probabilities computation.");
+        std::unreachable();
+    }
+};
+
+
+template <typename T>
+T calculateClusterCentroid(const Cluster<T>& cluster, const T& centroid)
+{
+    if (cluster.empty())
+    {
+        return centroid;
+    }
+
+    T sum = cluster[0];
+    for (size_t i = 1; i < cluster.size(); ++i)
+    {
+        sum += cluster[i];
+    }
+
+    return sum / cluster.size();
+}
+
+template <typename T, typename TDistanceFunction>
+bool updateClustersCentroid(std::vector<T>& centroids, 
+    const Clusters<T>& clusters, 
+    float epsilon)
+{
+    TDistanceFunction distanceFunctor{};
+    bool hasConverged = true;
+    for (size_t i = 0; i < centroids.size(); ++i)
+    {
+        const T oldCentroid = centroids[i];
+        centroids[i] = calculateClusterCentroid(clusters[i], oldCentroid);
+        if (distanceFunctor(oldCentroid, centroids[i]) > epsilon)
+        {
+            hasConverged = false;
+        }
+    }
+    return hasConverged;
+}
+
+
 // NOTE: Lloyd's Algorithm from https://en.wikipedia.org/wiki/K-means_clustering
 // returns the representative centroids.
 template <
@@ -383,47 +460,193 @@ std::vector<T> kMeansClustering(int nClusters, const TContainer& points, float e
     bool hasConverged {false};
     do
     {
-        clearClusters(clusters);
+        assignPointsToCluster(clusters, pointToClusterIndex, centroids, points);
+        // clearClusters(clusters);
 
-        auto interCentroidDistances = calculateInterCentroidDistances<T, TDistanceFunction>(centroids);
-        auto sortedInterCentroidDistances = sortInterCentroidDistances<T, TDistanceFunction>(interCentroidDistances);
+        // auto interCentroidDistances = calculateInterCentroidDistances<T, TDistanceFunction>(centroids);
+        // auto sortedInterCentroidDistances = sortInterCentroidDistances<T, TDistanceFunction>(interCentroidDistances);
 
-        // Assign each point to the cluster with the nearest centroid.
-        for (int pointIndex = 0; pointIndex < points.size(); ++pointIndex)
-        {
-            const auto& point = points[pointIndex];
+        // // Assign each point to the cluster with the nearest centroid.
+        // for (int pointIndex = 0; pointIndex < points.size(); ++pointIndex)
+        // {
+        //     const auto& point = points[pointIndex];
 
-            TDistanceFunction distanceFunctor{};
+        //     TDistanceFunction distanceFunctor{};
 
-            int originalNearestClusterIndex = pointToClusterIndex[pointIndex];
-            int& nearestClusterIndex = pointToClusterIndex[pointIndex];
+        //     int originalNearestClusterIndex = pointToClusterIndex[pointIndex];
+        //     int& nearestClusterIndex = pointToClusterIndex[pointIndex];
             
-            double originalNearestClusterDistance = distanceFunctor(point, centroids[originalNearestClusterIndex]);
-            double nearestClusterDistance = originalNearestClusterDistance;
+        //     double originalNearestClusterDistance = distanceFunctor(point, centroids[originalNearestClusterIndex]);
+        //     double nearestClusterDistance = originalNearestClusterDistance;
 
-            // centroidIndex 0 is already processed above in nearestClusterIndex.
-            for (int centroidIndex = 1; centroidIndex < centroids.size(); ++centroidIndex)
-            {
-                int nextCentroid = sortedInterCentroidDistances[originalNearestClusterIndex][centroidIndex].first;
-                if (interCentroidDistances[originalNearestClusterIndex][nextCentroid] >= 2*originalNearestClusterDistance)
-                {
-                    break;
-                }
-                auto d = distanceFunctor(point, centroids[nextCentroid]);
-                if (d < nearestClusterDistance)
-                {
-                    nearestClusterDistance = d;
-                    nearestClusterIndex = nextCentroid;
-                }
-            }
+        //     // centroidIndex 0 is already processed above in nearestClusterIndex.
+        //     for (int centroidIndex = 1; centroidIndex < centroids.size(); ++centroidIndex)
+        //     {
+        //         int nextCentroid = sortedInterCentroidDistances[originalNearestClusterIndex][centroidIndex].first;
+        //         if (interCentroidDistances[originalNearestClusterIndex][nextCentroid] >= 2*originalNearestClusterDistance)
+        //         {
+        //             break;
+        //         }
+        //         auto d = distanceFunctor(point, centroids[nextCentroid]);
+        //         if (d < nearestClusterDistance)
+        //         {
+        //             nearestClusterDistance = d;
+        //             nearestClusterIndex = nextCentroid;
+        //         }
+        //     }
 
-            clusters[nearestClusterIndex].push_back(point);
-        }
+        //     clusters[nearestClusterIndex].push_back(point);
+        // }
 
         hasConverged = updateClustersCentroid<T, TDistanceFunction>(centroids, clusters, epsilon);
     } while (!hasConverged);
 
     return centroids;
 }
+
+// NOTE: from https://vldb.org/pvldb/vol5/p622_bahmanbahmani_vldb2012.pdf
+template <typename T, typename TDistanceFunction, unsigned int SEED = 0, typename TContainer = std::vector<T>>
+struct PipePipeCentroidsInitializer 
+{
+    unsigned int seed;
+    PipePipeCentroidsInitializer()
+    {
+        if constexpr (SEED != 0)
+        {
+            seed = SEED;
+        } 
+        else
+        {
+            seed = std::random_device{}();
+        }
+    }
+
+    std::vector<T> operator()(int nClusters, const TContainer& points)
+    {
+        std::unordered_map<int, T> centroids;
+        centroids.reserve(nClusters);
+
+        // Select a first data point at random to be the first centroid.
+        std::mt19937 mt{seed};
+        std::uniform_int_distribution<size_t> get_random_index(0, points.size()-1);
+        size_t random_index = get_random_index(mt);
+        centroids.insert({random_index, points[random_index]});
+        
+        double phi = clusterCost<T, TDistanceFunction, TContainer>(points, {centroids[random_index]});
+
+        int nIterations = std::log(phi) + 1;
+        int lambda = nClusters * 2;
+
+        for (int i = 0; i < nIterations; ++i)
+        {
+            std::cout << i << '/' << nIterations << "completed iterations." << std::endl;
+            std::unordered_map<int, double> probabilities = probabilitiesToBeNextCentroid(centroids, points, lambda);
+            int found = 0;
+            while (found != lambda && centroids.size() != points.size())
+            {
+                random_index = selectWeightedRandomIndex(probabilities);
+                centroids.insert({random_index, points[random_index]});
+                reweightProbabilities(probabilities, random_index);
+                ++found;
+            }
+        }
+
+        std::vector<T> centroidsV;
+        std::transform(centroids.begin(), centroids.end(),
+            std::back_inserter(centroidsV),
+            [](const std::pair<int, T>& kvPair) {return kvPair.second;});
+        Clusters<T> clusters(centroidsV.size(), std::vector<T>());
+        std::vector<int> pointToClusterIndex (points.size(), 0);
+        assignPointsToCluster(clusters, pointToClusterIndex, centroidsV, points);
+
+        for (int i = 0; i < centroidsV.size(); ++i)
+        {
+            centroidsV[i] *= clusters[i].size();
+        }
+
+        return KMeans::kMeansClustering<T, TDistanceFunction, PlusPlusCentroidsInitializer<T, TDistanceFunction, SEED>> (nClusters, centroidsV);
+    }
+
+private:
+    double findNearestCentroidDistance(const T& point, const std::unordered_map<int, T>& centroids)
+    {
+        TDistanceFunction distanceFunctor{};
+        double nearestCentroidDistance = std::numeric_limits<double>::max(); 
+        for (const auto& [centroidIndex, centroid]: centroids)
+        {
+            if (auto d = distanceFunctor(point, centroid);
+                d < nearestCentroidDistance)
+            {
+                nearestCentroidDistance = d; 
+            }
+        }
+        return nearestCentroidDistance;
+    }
+
+    std::unordered_map<int, double> probabilitiesToBeNextCentroid(
+        const std::unordered_map<int, T>& centroids,
+        const TContainer& points,
+        const int lambda = 1)
+    {
+        double normalizingSum = 0.0;
+        std::unordered_map<int, double> weights;
+        for (int i = 0; i < points.size(); ++i)
+        {
+            if (i % 10'000)
+            {
+                std::cout << i << "/" << points.size() << " points completed." << std::endl;
+            }
+            if (centroids.find(i) != centroids.end())
+            {
+                continue;
+            }
+
+            const auto& point = points[i];
+
+            // NOTE (keb): This distance must really be the SQUARE of the actual distance.
+            double nearestCentroidDistanceSquared = lambda * std::pow(findNearestCentroidDistance(point, centroids), 2); 
+            normalizingSum += nearestCentroidDistanceSquared;
+            
+            assert(nearestCentroidDistanceSquared != std::numeric_limits<double>::max() && 
+                "Failed to find the neareast Centroid.");
+            weights.insert({i, nearestCentroidDistanceSquared});
+        }
+
+        std::for_each(weights.begin(), weights.end(), 
+            [&normalizingSum](auto& weight){weight.second = weight.second/normalizingSum;});
+
+        return weights;
+    }
+
+    // Selects the next centroids.
+    size_t selectWeightedRandomIndex(const std::unordered_map<int, double>& probabilities)
+    {
+        std::mt19937 mt {seed};
+        double rand = std::uniform_real_distribution{0.0,1.0}(mt);
+        double accumulator = 0.0;
+        for (const auto& [pointIndex, probability] : probabilities)
+        {
+            accumulator += probability;
+            if (rand <= accumulator)
+            {
+                return pointIndex;
+            }
+        }
+
+        assert(false && "Error in probabilities computation.");
+        std::unreachable();
+    }
+    
+    void reweightProbabilities(std::unordered_map<int, double>& probabilities, size_t indexToRemove)
+    {
+        double weightToRemove = probabilities[indexToRemove];
+        double normalizingSum = 1.0 - weightToRemove;
+        probabilities[indexToRemove] = 0.0;
+        for (auto& [pointIndex, probability]: probabilities)
+        {
+            probability /= normalizingSum;
+        }
+    }
+};
 
 }; // namespace KMeans

@@ -75,6 +75,36 @@ TEST_F(PointTest, kMeansClusteringPlusPlusCentroids)
                                    L2Distance<Point<double>>, 
                                    PlusPlusCentroidsInitializer<Point<double>, L2Distance<Point<double>>, 42>>
                                        (nClusters, {p1, p2, p3, p4, p5, p6, p7}, 0.01f); 
-    std::vector<Point<double>> expected {Point({2, 3.5, 2.5}), Point({95, 22.5, 10}), Point({1000, 23/3.0, 29/3.0})};
+
+    std::vector<Point<double>> expected {Point({1, 3.5, 2.5}), Point({95, 22.5, 10}), Point({1000, 23/3.0, 29/3.0})};
+    EXPECT_EQ(expected, result);
+}
+
+TEST_F(PointTest, clusterCost)
+{
+    std::vector<Point<double>> points {p1,p2,p3,p4};
+    std::vector<Point<double>> centroids {p1};
+    double result = KMeans::clusterCost<Point<double>, L2Distance<Point<double>>, std::vector<Point<double>>>(points, centroids);
+    std::cout << result << std::endl;
+    EXPECT_NEAR(1996254, result, 0.0001);
+}
+
+TEST_F(PointTest, kMeansClusteringPipePipeCentroids)
+{
+    int nClusters = 3;
+    auto result = kMeansClustering<Point<double>, 
+                                   L2Distance<Point<double>>, 
+                                   PipePipeCentroidsInitializer<Point<double>, L2Distance<Point<double>>, 42>>
+                                       (nClusters, {p1, p2, p3, p4, p5, p6, p7}, 0.01f); 
+
+    std::vector<Point<double>> expected {Point({1000, 23/3.0, 29/3.0}), Point({1, 3.5, 2.5}), Point({95, 22.5, 10})};
+
+    for (const auto& r : result)
+    {
+        for (int i = 0; i < r.m_data.size(); ++i)
+        {
+            std::cout << r.m_data[i] << std::endl;
+        }
+    }
     EXPECT_EQ(expected, result);
 }

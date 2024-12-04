@@ -9,8 +9,15 @@
 namespace PokerTypes 
 {
 
+
 struct Histogram
 {
+	Histogram() = default;
+	Histogram(const Histogram&) = default;
+	Histogram(Histogram&&) = default;
+	Histogram& operator=(const Histogram&) = default;
+	Histogram& operator=(Histogram&&) = default;
+
 	Histogram& operator+=(const Histogram& other)
 	{
         auto thisItr = m_data.begin();
@@ -20,6 +27,8 @@ struct Histogram
         {
             *thisItr += *otherItr;
         }
+
+		m_nElementsStored += other.m_nElementsStored; 
         return *this;
 	}
     
@@ -32,12 +41,64 @@ struct Histogram
         }
         return result;
     }
+	
+	Histogram& operator/=(double divisor)
+    {
+		for (int i = 0; i < m_data.size(); ++i)
+		{
+            m_data[i] /= divisor;
+        }
+        return *this;
+    }
+
+	Histogram& operator*=(double factor)
+    {
+        for (auto& e : m_data)
+        {
+            e *= factor;
+        }
+        return *this;
+    }
+
+	Histogram& convertToPercent()
+	{
+		this->operator/=(m_nElementsStored);
+		return *this;
+	}
+	
+	Histogram getPercent()
+	{
+		return *this / m_nElementsStored;
+	}
+
+	std::string toString()
+	{
+		std::string result;
+		for (int i = 0; i < m_data.size(); ++i)
+		{
+			result += (i == 0 ? std::to_string(m_data[i]) : '|' + std::to_string(m_data[i]));
+		}
+		result += '\n';
+		return result;
+	}
+
+	void incrementBin(size_t binIndex, int n)
+	{
+		m_data[binIndex] += n;
+		m_nElementsStored += n;
+	}
 
 	size_t size() const { return m_data.size(); }
-	uint8_t& operator[](size_t index) { return m_data[index]; }
-	const uint8_t& operator[](size_t index) const { return m_data[index]; }
+	float& operator[](size_t index) { return m_data[index]; }
+	const float& operator[](size_t index) const { return m_data[index]; }
+    
+	std::array<float, 30>::iterator begin() { return m_data.begin(); }
+	std::array<float, 30>::iterator end() { return m_data.end(); }
+    std::array<float, 30>::const_iterator begin() const { return m_data.begin(); }
+    std::array<float, 30>::const_iterator end() const { return m_data.end(); }
 
-	std::array<uint8_t, 20> m_data;
+	std::array<float, 50> m_data {0};
+	uint32_t m_nElementsStored {0};
 };
 
 namespace Constants
@@ -50,6 +111,12 @@ namespace Constants
 	constexpr int nPrivateCards{ 2 };
     constexpr int nTotalPlayerCards = nPrivateCards * nPlayers;
 	constexpr int nTotalCards = nTotalPlayerCards + nCommunityCards;
+	constexpr std::array<int, 4> nCardsRoundAccumulator = {
+		nPrivateCards, 
+		nPrivateCards + nFlopCards, 
+		nPrivateCards + nFlopCards + nTurnCards,
+		nPrivateCards + nFlopCards + nTurnCards + nRiverCards
+	};
 	constexpr int communityCardIndex = nPrivateCards * nPlayers;
 
 	constexpr int nRanks{ 13 };
