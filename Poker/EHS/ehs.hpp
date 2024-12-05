@@ -279,6 +279,11 @@ namespace EHS
             KMeans::EMDDistance<PokerTypes::Histogram>, 
             KMeans::PlusPlusCentroidsInitializer<PokerTypes::Histogram, KMeans::EMDDistance<PokerTypes::Histogram>, 42>
             > (nBuckets, dataPoints);
+        // std::vector<Histogram> dataPoints (histograms.get(), histograms.get() + nHistograms);
+        // result = KMeans::kMeansClustering<PokerTypes::Histogram, 
+        //     KMeans::EMDDistance<PokerTypes::Histogram>, 
+        //     KMeans::PipePipeCentroidsInitializer<PokerTypes::Histogram, KMeans::EMDDistance<PokerTypes::Histogram>, 42>
+        //     > (nBuckets, dataPoints);
         
         // std::span<Histogram> dataPoints (histograms.get(), histograms.get() + nHistograms);
         // result = KMeans::kMeansClustering<PokerTypes::Histogram, 
