@@ -277,7 +277,7 @@ namespace EHS
         std::vector<Histogram> dataPoints (histograms.get(), histograms.get() + nHistograms);
         result = KMeans::kMeansClustering<PokerTypes::Histogram, 
             KMeans::EMDDistance<PokerTypes::Histogram>, 
-            KMeans::PlusPlusCentroidsInitializer<PokerTypes::Histogram, KMeans::EMDDistance<PokerTypes::Histogram>, 42>
+            KMeans::PipePipeCentroidsInitializer<PokerTypes::Histogram, KMeans::EMDDistance<PokerTypes::Histogram>>
             > (nBuckets, dataPoints);
         // std::vector<Histogram> dataPoints (histograms.get(), histograms.get() + nHistograms);
         // result = KMeans::kMeansClustering<PokerTypes::Histogram, 

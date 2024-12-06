@@ -1,10 +1,16 @@
 #pragma once
 
+#include <random.hpp>
+#include <thread.hpp>
+#include <time.hpp>
+
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cmath>
 #include <iostream> // TODO (keb): remove, only for debugging
+#include <mutex>
 #include <random>
 #include <unordered_map>
 #include <utility>
@@ -12,6 +18,8 @@
 
 namespace KMeans
 {
+
+constexpr int nThreads = 12;
 
 template <typename T>    
 using Cluster = std::vector<T>;
@@ -79,6 +87,8 @@ struct Point
         return result;
     }
 
+    const T& operator[] (size_t index) const { return m_data[index]; }
+    T& operator[](size_t index) { return m_data[index]; }
     size_t size() const { return m_data.size(); }
     std::vector<T>::iterator begin() { return m_data.begin(); }
     std::vector<T>::iterator end() { return m_data.end(); }
@@ -121,15 +131,15 @@ struct EMDDistance
         assert(left.size() == right.size() && "Can't compare vectors of different sizes.");
         size_t sz = left.size();
 
-        double totalDistance = 0.0; 
-        double previousDistance = 0.0;
+        double result = 0.0;
+        std::vector<double> emd (sz + 1, 0);
         for (int i = 1; i <= sz; ++i)
         {
-            previousDistance = std::abs(left[i-1] + previousDistance - right[i-1]);
-            totalDistance += previousDistance;
+            emd[i] = left[i-1] + emd[i-1] - right[i-1];
+            result += std::abs(emd[i]);
         }
 
-        return totalDistance;
+        return result;
     }
 };
 
@@ -222,8 +232,8 @@ template <
     typename TDistanceFunction = L2Distance<T>, 
     typename TContainer = std::vector<T>
 >
-void assignPointsToCluster(Clusters<T>& clusters, 
-    std::vector<int>& pointToClusterIndex,
+double assignPointsToCluster(Clusters<T>& clusters, 
+    std::vector<size_t>& pointToClusterIndex,
     const std::vector<T>& centroids,
     const TContainer& points)
 {
@@ -232,37 +242,66 @@ void assignPointsToCluster(Clusters<T>& clusters,
     auto interCentroidDistances = calculateInterCentroidDistances<T, TDistanceFunction>(centroids);
     auto sortedInterCentroidDistances = sortInterCentroidDistances<T, TDistanceFunction>(interCentroidDistances);
 
+    std::atomic<double> error {0.0};
+    std::mutex mutex;
+    thread_local Clusters<size_t> threadCluster (clusters.size(), std::vector<size_t>());
+
     // Assign each point to the cluster with the nearest centroid.
-    for (int pointIndex = 0; pointIndex < points.size(); ++pointIndex)
+    auto callback = [&clusters, &points, &pointToClusterIndex, &interCentroidDistances, &sortedInterCentroidDistances, &centroids, &error, &mutex](size_t start, size_t end, int threadId)
     {
-        const auto& point = points[pointIndex];
-
-        TDistanceFunction distanceFunctor{};
-
-        int& nearestClusterIndex = pointToClusterIndex[pointIndex];
-        const int originalNearestClusterIndex = nearestClusterIndex;
-        
-        double originalNearestClusterDistance = distanceFunctor(point, centroids[originalNearestClusterIndex]);
-        double nearestClusterDistance = originalNearestClusterDistance;
-
-        // centroidIndex 0 is already processed above in nearestClusterIndex.
-        for (int centroidIndex = 1; centroidIndex < centroids.size(); ++centroidIndex)
+        auto startTime = std::chrono::high_resolution_clock::now();
+        for (int pointIndex = start; pointIndex < end; ++pointIndex)
         {
-            int nextCentroid = sortedInterCentroidDistances[originalNearestClusterIndex][centroidIndex].first;
-            if (interCentroidDistances[originalNearestClusterIndex][nextCentroid] >= 2*originalNearestClusterDistance)
+            if ((pointIndex-start) % 1'000'000 == 0 && threadId == 0)
             {
-                break;
+                std::cout << "Time remaining for iteration " << Time::timeRemaining(end-start, pointIndex-start, startTime);
             }
-            auto d = distanceFunctor(point, centroids[nextCentroid]);
-            if (d < nearestClusterDistance)
+            const auto& point = points[pointIndex];
+
+            TDistanceFunction distanceFunctor{};
+
+            size_t& nearestClusterIndex = pointToClusterIndex[pointIndex];
+            const size_t originalNearestClusterIndex = nearestClusterIndex;
+            
+            double originalNearestClusterDistance = distanceFunctor(point, centroids[originalNearestClusterIndex]);
+            double nearestClusterDistance = originalNearestClusterDistance;
+
+            // centroidIndex 0 is already processed above in nearestClusterIndex.
+            for (int centroidIndex = 1; centroidIndex < centroids.size(); ++centroidIndex)
             {
-                nearestClusterDistance = d;
-                nearestClusterIndex = nextCentroid;
+                int nextCentroid = sortedInterCentroidDistances[originalNearestClusterIndex][centroidIndex].first;
+                if (interCentroidDistances[originalNearestClusterIndex][nextCentroid] >= 2*originalNearestClusterDistance)
+                {
+                    break;
+                }
+                auto d = distanceFunctor(point, centroids[nextCentroid]);
+                if (d < nearestClusterDistance)
+                {
+                    nearestClusterDistance = d;
+                    nearestClusterIndex = nextCentroid;
+                }
+            }
+
+            threadCluster[nearestClusterIndex].push_back(pointIndex);
+
+            error += std::pow(nearestClusterDistance, 2);
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            for (int clusterIndex = 0; clusterIndex < threadCluster.size(); ++clusterIndex)
+            {
+                const auto& pointIndexes = threadCluster[clusterIndex];
+                for (auto index : pointIndexes)
+                {
+                    clusters[clusterIndex].push_back(points[index]);
+                }
             }
         }
+    };
 
-        clusters[nearestClusterIndex].push_back(point);
-    }
+    Thread::startThreadedLoop(callback, points.size(), nThreads);
+
+    return error;
 }
 
 template <typename T, typename Dummy, unsigned int SEED = 0>
@@ -282,12 +321,18 @@ struct RandomCentroidsInitializer
         }
     }
 
-    std::vector<T> operator()(int nClusters, const std::vector<T>& points)
+    std::unordered_map<size_t, T> operator()(int nClusters, const std::vector<T>& points)
     {
         auto pointsCpy = points;
         std::mt19937 mt{seed};
         std::shuffle(pointsCpy.begin(), pointsCpy.end(), mt);
-        return {pointsCpy.begin(), pointsCpy.begin() + nClusters};
+        std::unordered_map<size_t, T> result;
+        for (int i = 0; i < nClusters; ++i)
+        {
+            // NOTE (keb): the centroid index is irrelevant with the Random Initializer.
+            result.insert({i, pointsCpy[i]});
+        }
+        return result;
     }   
 };
 
@@ -310,9 +355,9 @@ struct PlusPlusCentroidsInitializer
         }
     }
 
-    std::vector<T> operator()(int nClusters, const TContainer& points)
+    std::unordered_map<size_t, T> operator()(int nClusters, const TContainer& points)
     {
-        std::unordered_map<int, T> centroids;
+        std::unordered_map<size_t, T> centroids;
         centroids.reserve(nClusters);
 
         // Select a first data point at random to be the first centroid.
@@ -332,15 +377,11 @@ struct PlusPlusCentroidsInitializer
             std::cout << "Time Left (s): " << std::chrono::duration<double>(endTime-startTime).count() * (nClusters - centroids.size()) << std::endl;
         }
 
-        std::vector<T> result;
-        std::transform(centroids.begin(), centroids.end(),
-            std::back_inserter(result),
-            [](const std::pair<int, T>& kvPair) {return kvPair.second;});
-        return result;    
+        return centroids;
     }
 
 private:
-    double findNearestCentroidDistance(const T& point, const std::unordered_map<int, T>& centroids)
+    double findNearestCentroidDistance(const T& point, const std::unordered_map<size_t, T>& centroids)
     {
         TDistanceFunction distanceFunctor{};
         double nearestCentroidDistance = std::numeric_limits<double>::max(); 
@@ -359,7 +400,7 @@ private:
     // for it to be selected based on how far it is from its closest centroid.
     // The farther it is, the more chances it has to be selected.
     std::vector<std::pair<int, double>> probabilitiesToBeNextCentroid(
-        const std::unordered_map<int, T>& centroids,
+        const std::unordered_map<size_t, T>& centroids,
         const TContainer& points,
         const int lambda = 1)
     {
@@ -430,20 +471,27 @@ T calculateClusterCentroid(const Cluster<T>& cluster, const T& centroid)
 
 template <typename T, typename TDistanceFunction>
 bool updateClustersCentroid(std::vector<T>& centroids, 
-    const Clusters<T>& clusters, 
+    const Clusters<T>& clusters,
     float epsilon)
 {
-    TDistanceFunction distanceFunctor{};
-    bool hasConverged = true;
-    for (size_t i = 0; i < centroids.size(); ++i)
+    std::atomic<bool> hasConverged = true;
+
+    auto callback = [&hasConverged, &clusters, &centroids, &epsilon](size_t start, size_t end, int threadId)
     {
-        const T oldCentroid = centroids[i];
-        centroids[i] = calculateClusterCentroid(clusters[i], oldCentroid);
-        if (distanceFunctor(oldCentroid, centroids[i]) > epsilon)
+        TDistanceFunction distanceFunctor{};
+        for (size_t i = start; i < end; ++i)
         {
-            hasConverged = false;
+            const T oldCentroid = centroids[i];
+            centroids[i] = calculateClusterCentroid(clusters[i], oldCentroid);
+            double distance = distanceFunctor(oldCentroid, centroids[i]);
+            if (distance > epsilon)
+            {
+                hasConverged = false;
+            }
         }
-    }
+    };
+
+    Thread::startThreadedLoop(callback, centroids.size(), nThreads);
     return hasConverged;
 }
 
@@ -456,58 +504,32 @@ template <
     typename TCentroidsInitializer = RandomCentroidsInitializer<T, TDistanceFunction>,
     typename TContainer = std::vector<T>
 >
-std::vector<T> kMeansClustering(int nClusters, const TContainer& points, float epsilon = 0.01)
+std::vector<T> kMeansClustering(int nClusters, const TContainer& points, float epsilon = 0.1)
 {
     assert(nClusters <= points.size() && "Requesting more clusters than there are data points.");
-    std::vector<T> centroids = TCentroidsInitializer{}(nClusters, points);
+    auto centroids = TCentroidsInitializer{}(nClusters, points);
     Clusters<T> clusters(nClusters, std::vector<T>());
-    std::vector<int> pointToClusterIndex (points.size(), 0);
+    std::vector<size_t> pointToClusterIndex (points.size(), 0);
 
+    std::vector<T> centroidsValues;
+    centroidsValues.reserve(centroids.size());
+    std::transform(centroids.begin(), centroids.end(),
+        std::back_inserter(centroidsValues),
+        [](const auto& kv){ return kv.second; });
+
+    auto startTime = std::chrono::high_resolution_clock::now();
     bool hasConverged {false};
     do
     {
-        assignPointsToCluster(clusters, pointToClusterIndex, centroids, points);
-        // clearClusters(clusters);
+        double totalError = assignPointsToCluster(clusters, pointToClusterIndex, centroidsValues, points);
 
-        // auto interCentroidDistances = calculateInterCentroidDistances<T, TDistanceFunction>(centroids);
-        // auto sortedInterCentroidDistances = sortInterCentroidDistances<T, TDistanceFunction>(interCentroidDistances);
-
-        // // Assign each point to the cluster with the nearest centroid.
-        // for (int pointIndex = 0; pointIndex < points.size(); ++pointIndex)
-        // {
-        //     const auto& point = points[pointIndex];
-
-        //     TDistanceFunction distanceFunctor{};
-
-        //     int originalNearestClusterIndex = pointToClusterIndex[pointIndex];
-        //     int& nearestClusterIndex = pointToClusterIndex[pointIndex];
-            
-        //     double originalNearestClusterDistance = distanceFunctor(point, centroids[originalNearestClusterIndex]);
-        //     double nearestClusterDistance = originalNearestClusterDistance;
-
-        //     // centroidIndex 0 is already processed above in nearestClusterIndex.
-        //     for (int centroidIndex = 1; centroidIndex < centroids.size(); ++centroidIndex)
-        //     {
-        //         int nextCentroid = sortedInterCentroidDistances[originalNearestClusterIndex][centroidIndex].first;
-        //         if (interCentroidDistances[originalNearestClusterIndex][nextCentroid] >= 2*originalNearestClusterDistance)
-        //         {
-        //             break;
-        //         }
-        //         auto d = distanceFunctor(point, centroids[nextCentroid]);
-        //         if (d < nearestClusterDistance)
-        //         {
-        //             nearestClusterDistance = d;
-        //             nearestClusterIndex = nextCentroid;
-        //         }
-        //     }
-
-        //     clusters[nearestClusterIndex].push_back(point);
-        // }
-
-        hasConverged = updateClustersCentroid<T, TDistanceFunction>(centroids, clusters, epsilon);
+        hasConverged = updateClustersCentroid<T, TDistanceFunction>(centroidsValues, clusters, epsilon);
+        auto endTime = std::chrono::high_resolution_clock::now();
+        std::cout << "Lloyd's iteration (error=" << totalError << ") took: " << std::chrono::duration<double>(endTime-startTime).count() << "(s)" << std::endl;
+        startTime = std::chrono::high_resolution_clock::now();
     } while (!hasConverged);
 
-    return centroids;
+    return centroidsValues;
 }
 
 // NOTE: from https://vldb.org/pvldb/vol5/p622_bahmanbahmani_vldb2012.pdf
@@ -527,16 +549,16 @@ struct PipePipeCentroidsInitializer
         }
     }
 
-    std::vector<T> operator()(int nClusters, const TContainer& points)
+    std::unordered_map<size_t, T> operator()(int nClusters, const TContainer& points)
     {
-        std::vector<T> centroids;
+        std::unordered_map<size_t, T> centroids;
         centroids.reserve(nClusters);
 
         // Select a first data point at random to be the first centroid.
         std::mt19937 mt{seed};
         std::uniform_int_distribution<size_t> get_random_index(0, points.size()-1);
         size_t random_index = get_random_index(mt);
-        centroids.push_back(points[random_index]);
+        centroids.insert({random_index, points[random_index]});
         
         // NOTE (keb): log(phi) is a theoretical bound.
         // double phi = clusterCost<T, TDistanceFunction, TContainer>(points, {centroids[random_index]});
@@ -548,36 +570,54 @@ struct PipePipeCentroidsInitializer
 
         for (int i = 0; i < nIterations; ++i)
         {
-            std::vector<std::pair<int, double>> probabilities = probabilitiesToBeNextCentroid(centroids, points, lambda);
-            int found = 0;
-            while (found != lambda && centroids.size() != points.size())
+            std::cout << "Iteration: " << i+1 << "/" << nIterations << std::endl;
+            std::vector<double> probabilities = probabilitiesToBeNextCentroid(centroids, points, lambda);
+            for (int pointIndex = 0; pointIndex < points.size(); ++pointIndex)
             {
-                random_index = selectWeightedRandomIndex(probabilities);
-                centroids.push_back(points[random_index]);
-                // NOTE (keb): no need to reweight, as the sampling is done with replacement.
-                // reweightProbabilities(probabilities, random_index);
-                ++found;
+                double p = Random::rand();
+                if (p <= probabilities[pointIndex])
+                {
+                    centroids.insert({pointIndex, points[pointIndex]});
+                }
             }
+            std::cout << "Selected " << centroids.size() << " intermediate centroids in total." << std::endl << std::endl;
         }
+
 
         Clusters<T> clusters(centroids.size(), std::vector<T>());
-        std::vector<int> pointToClusterIndex (points.size(), 0);
-        assignPointsToCluster(clusters, pointToClusterIndex, centroids, points);
-
-        for (int i = 0; i < centroids.size(); ++i)
+        std::vector<size_t> pointToClusterIndex (points.size(), 0);
+        std::vector<size_t> centroidsKeys;
+        std::vector<T> centroidsValues;
+        centroidsKeys.reserve(centroids.size());
+        centroidsValues.reserve(centroids.size());
+        for (const auto& [pointIndex, centroid] : centroids)
         {
-            // centroids[i] *= clusters[i].size();
+            centroidsKeys.push_back(pointIndex);
+            centroidsValues.push_back(centroid);
         }
 
-        return KMeans::kMeansClustering<T, TDistanceFunction, PlusPlusCentroidsInitializer<T, TDistanceFunction, SEED>> (nClusters, centroids);
+        assignPointsToCluster(clusters, pointToClusterIndex, centroidsValues, points);
+
+        for (int i = 0; i < centroidsValues.size(); ++i)
+        {
+            centroidsValues[i] *= clusters[i].size();
+        }
+
+        auto chosenCentroids = PlusPlusCentroidsInitializer<T, TDistanceFunction, SEED>{}(nClusters, centroidsValues);
+        std::unordered_map<size_t, T> result;
+        for (const auto& [index, centroid] : chosenCentroids)
+        {
+            result.insert({centroidsKeys[index], centroidsValues[index]/clusters[index].size()});
+        }
+        return result;
     }
 
 private:
-    double findNearestCentroidDistance(const T& point, const std::vector<T>& centroids)
+    double findNearestCentroidDistance(const T& point, const std::unordered_map<size_t, T>& centroids)
     {
         TDistanceFunction distanceFunctor{};
         double nearestCentroidDistance = std::numeric_limits<double>::max(); 
-        for (const auto& centroid: centroids)
+        for (const auto& [pointIndex, centroid]: centroids)
         {
             if (auto d = distanceFunctor(point, centroid);
                 d < nearestCentroidDistance)
@@ -588,34 +628,43 @@ private:
         return nearestCentroidDistance;
     }
 
-    std::vector<std::pair<int, double>> probabilitiesToBeNextCentroid(
-        const std::vector<T>& centroids,
+    std::vector<double> probabilitiesToBeNextCentroid(
+        const std::unordered_map<size_t, T> centroids,
         const TContainer& points,
         const int lambda = 1)
     {
-        double normalizingSum = 0.0;
-        std::vector<std::pair<int, double>> weights;
-        weights.reserve(points.size());
-        for (int i = 0; i < points.size(); ++i)
-        {
-            if (i % 10'000'000 == 0)
-            {
-                std::cout << i << "/" << points.size() << " points completed." << std::endl;
-            }
-            
-            const auto& point = points[i];
+        std::atomic<double> normalizingSum = 0.0;
+        std::vector<double> weights (points.size(), 0);
 
-            // NOTE (keb): This distance must really be the SQUARE of the actual distance.
-            double nearestCentroidDistanceSquared = lambda * std::pow(findNearestCentroidDistance(point, centroids), 2); 
-            normalizingSum += nearestCentroidDistanceSquared;
-            
-            assert(nearestCentroidDistanceSquared != std::numeric_limits<double>::max() && 
-                "Failed to find the neareast Centroid.");
-            weights.push_back({i, nearestCentroidDistanceSquared});
-        }
+        auto callback = [this, &points, &centroids, &weights, &normalizingSum, &lambda](size_t start, size_t end, int threadId)
+        {
+            auto startTime = std::chrono::high_resolution_clock::now();
+            for (int i = start; i < end; ++i)
+            {
+                if ((i-start) % 1'000'000 == 0 && threadId == 0)
+                {
+                    std::cout << "Time remaining for iteration " << Time::timeRemaining(end-start, i-start, startTime);
+                }
+                
+                const auto& point = points[i];
+
+                // NOTE (keb): This distance must really be the SQUARE of the actual distance.
+                double nearestCentroidDistanceSquared = std::pow(findNearestCentroidDistance(point, centroids), 2); 
+                normalizingSum += nearestCentroidDistanceSquared;
+
+                // NOTE (keb): Scale by lambda to select lambda centroids in expectation (see article).
+                nearestCentroidDistanceSquared *= lambda;
+                
+                assert(nearestCentroidDistanceSquared != std::numeric_limits<double>::max() && 
+                    "Failed to find the neareast Centroid.");
+                weights[i] = nearestCentroidDistanceSquared;
+            }
+        };
+
+        Thread::startThreadedLoop(callback, points.size(), nThreads); 
 
         std::for_each(weights.begin(), weights.end(), 
-            [&normalizingSum](auto& weight){weight.second = weight.second/normalizingSum;});
+            [&normalizingSum](auto& weight){weight = weight/normalizingSum;});
 
         return weights;
     }

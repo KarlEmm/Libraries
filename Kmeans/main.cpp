@@ -36,26 +36,40 @@ int main()
     //     }
     // }
 
-    Point<double> p1;
-    Point<double> p2;
-    Point<double> p3;
-    Point<double> p4;
-    Point<double> p5;
-    Point<double> p6;
-    Point<double> p7;
-    p1 = {1,2,3};
-    p2 = {1,5,2};
-    p3 = {1000, 11, 12};
-    p4 = {1000, 10, 7};
-    p5 = {1000, 2, 10};
-    p6 = {100, 25, 10};
-    p7 = {90, 20, 10};
+    Point<double> p0 ({1,2,3});
+    Point<double> p1 ({1,5,6});
+    Point<double> p2 ({1,5,3});
+    Point<double> p3 ({1,5,2});
+    Point<double> p4 ({1,4,5});
+    Point<double> p5 ({1,5,3});
+    Point<double> p6 ({1,5,2});
+    Point<double> p7 ({1,4,5});
+    Point<double> p8 ({100, 600, 10});
+    Point<double> p9 ({90, 500, 10});
+    Point<double> p10 ({100, 700, 10});
+    Point<double> p11 ({90, 510, 10});
+    Point<double> p12 ({100, 575, 10});
+    Point<double> p13 ({90, 550, 10});
+    Point<double> p14 ({1000, 2, 10});
+    Point<double> p15 ({1000, 2, 10});
+    Point<double> p16 ({1000, 11, 12});
+    Point<double> p17 ({1000, 10, 7});
+    Point<double> p18 ({1000, 2, 10});
+    Point<double> p19 ({400, 200, 10});
+    Point<double> p20 ({250, 250, 10});
+    Point<double> p21 ({150, 175, 12});
+    Point<double> p22 ({100, 50, 7});
+    Point<double> p23 ({100, 2, 10});
     
     int nClusters = 3;
-    auto result = kMeansClustering<Point<double>, 
-                                   L2Distance<Point<double>>, 
-                                   PipePipeCentroidsInitializer<Point<double>, L2Distance<Point<double>>, 42>>
-                                       (nClusters, {p1, p2, p3, p4, p5, p6, p7}, 0.01f); 
+    // auto result = kMeansClustering<Point<double>, 
+    //                                L2Distance<Point<double>>, 
+    //                                PipePipeCentroidsInitializer<Point<double>, L2Distance<Point<double>>, 42>>
+    //                                    (nClusters, {p1, p2, p3, p4, p5, p6, p7, p8, p10, p12, p11, p13, p15}, 0.01f); 
 
-    // std::vector<Point<double>> expected {Point({1, 3.5, 2.5}), Point({95, 22.5, 10}), Point({1000, 23/3.0, 29/3.0})};
+    auto result = PlusPlusCentroidsInitializer<Point<double>, L2Distance<Point<double>>, 42>{}(3, {p0, p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15, p16, p17, p18, p19, p20, p21, p22, p23});
+    for (const auto& [index, v] : result)
+    {
+        std::cout << index << std::endl; 
+    }
 }

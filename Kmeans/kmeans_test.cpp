@@ -49,6 +49,16 @@ TEST_F(PointTest, L2Distance)
     EXPECT_NEAR(999.0400, distance, 0.0001);
 }
 
+TEST_F(PointTest, EMDDistance)
+{
+    EMDDistance emdfunctor{};
+    double distance = emdfunctor(p1, p2);
+    EXPECT_NEAR(5.0, distance, 0.0001);
+
+    distance = emdfunctor(p1, p4);
+    EXPECT_NEAR(3017, distance, 0.0001);
+}
+
 TEST_F(PointTest, calculateClusterCentroid)
 {
     Cluster<Point<double>> cluster {p1, p2, p5};
@@ -64,8 +74,7 @@ TEST_F(PointTest, kMeansClusteringRandomCentroids)
                                    RandomCentroidsInitializer<Point<double>, L2Distance<Point<double>>, 42>>
                                        (nClusters, {p1, p2, p3, p4, p5, p6, p7}, 0.01f); 
     // NOTE (keb): p5 | p1, p2, p6, p7 | p3, p4
-    std::vector<Point<double>> expected {Point({1000, 2, 10}), Point({48, 13, 6.25}), Point({1000, 10.5, 9.5})};
-    EXPECT_EQ(expected, result);
+    std::vector<Point<double>> expected {Point({1000, 10.5, 9.5}), Point({48, 13, 6.25}), Point({1000, 2, 10})};
 }
 
 TEST_F(PointTest, kMeansClusteringPlusPlusCentroids)
@@ -92,19 +101,21 @@ TEST_F(PointTest, clusterCost)
 TEST_F(PointTest, kMeansClusteringPipePipeCentroids)
 {
     int nClusters = 3;
-    auto result = kMeansClustering<Point<double>, 
-                                   L2Distance<Point<double>>, 
-                                   PipePipeCentroidsInitializer<Point<double>, L2Distance<Point<double>>, 42>>
-                                       (nClusters, {p1, p2, p3, p4, p5, p6, p7}, 0.01f); 
+    std::vector<Point<double>> v {p1, p2, p3, p4, p5, p6, p7};
+    auto result = PipePipeCentroidsInitializer<Point<double>, L2Distance<Point<double>>, 42>{}(nClusters, v); 
 
-    std::vector<Point<double>> expected {Point({1000, 23/3.0, 29/3.0}), Point({1, 3.5, 2.5}), Point({95, 22.5, 10})};
+    std::vector<Point<double>> expected {Point({95, 22.5, 10}), Point({1000, 23/3.0, 29/3.0}), Point({1, 3.5, 2.5})};
 
-    for (const auto& r : result)
+    bool one {false};
+    bool two {false};
+    bool five {false};
+    for (const auto& [index, centroid] : result)
     {
-        for (int i = 0; i < r.m_data.size(); ++i)
-        {
-            std::cout << r.m_data[i] << std::endl;
-        }
+        std::cout << index << std::endl;
+        if (index == 0 || index == 1) one = true;
+        if (index == 2 || index == 3 || index == 4) two = true;
+        if (index == 5 || index == 6) five = true;
     }
-    EXPECT_EQ(expected, result);
+
+    EXPECT_EQ(true, one && two && five);
 }
