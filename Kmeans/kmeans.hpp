@@ -643,7 +643,7 @@ private:
             {
                 if ((i-start) % 1'000'000 == 0 && threadId == 0)
                 {
-                    std::cout << "Time remaining for iteration " << Time::timeRemaining(end-start, i-start, startTime);
+                    std::cout << "Iteration Time Remaining: " << Time::timeRemaining(end-start, i-start, startTime) << "s" << std::endl;
                 }
                 
                 const auto& point = points[i];

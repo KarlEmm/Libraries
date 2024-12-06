@@ -24,6 +24,8 @@ namespace Time
 	inline long long timeRemaining(size_t nElements, size_t currentElement, std::chrono::time_point<TClock> start, TUnits units = 1s)
 	{
 		auto timeElapsed = getTimeElapsed(start, units);
-		return ((timeElapsed * nElements) / (double)currentElement) - timeElapsed;
+		return currentElement == 0 ? 
+			std::numeric_limits<long long>::max() : 
+			((timeElapsed * nElements) / (double)currentElement) - timeElapsed;
 	}
 };

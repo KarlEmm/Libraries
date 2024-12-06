@@ -41,5 +41,13 @@ int main()
     // Histogram& h = histogramsFlop[fi];
     // std::cout << h.getPercent().toString() << std::endl;
 
-    EHS::writeRoundCentroids("turnHistogramsCentroids.dat", 200, histogramsTurn, BettingRound::Turn, turn_indexer); 
+    auto startTime = std::chrono::high_resolution_clock::now();
+    EHS::writeRoundCentroids("turnHistogramsCentroids0.dat", 200, histogramsTurn, BettingRound::Turn, turn_indexer); 
+    auto endTime = std::chrono::high_resolution_clock::now();
+    std::cout << "First KMEANS took: " << std::chrono::duration<double>(endTime - startTime).count() << std::endl;
+    
+    startTime = std::chrono::high_resolution_clock::now();
+    EHS::writeRoundCentroids("turnHistogramsCentroids1.dat", 200, histogramsTurn, BettingRound::Turn, turn_indexer); 
+    endTime = std::chrono::high_resolution_clock::now();
+    std::cout << "First KMEANS took: " << std::chrono::duration<double>(endTime - startTime).count() << std::endl;
 }
