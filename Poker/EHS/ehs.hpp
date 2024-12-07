@@ -35,11 +35,16 @@ namespace EHS
 {
     using namespace PokerTypes;
 
-    const char* riverEHSFilename = "ehs.dat";
-    const char* turnHistogramsFilename = "turnHistograms.dat";
-    const char* flopHistogramsFilename = "flopHistograms.dat";
-    const char* turnHistogramsCentroidsFilename = "turnHistogramsCentroids.dat";
-    const char* flopHistogramsCentroidsFilename = "flopHistogramsCentroids.dat";
+    namespace AbstractionsContext
+    {
+        const char* riverEHSFilename = "ehs.dat";
+        const char* flopHistogramsFilename = "flopHistograms.dat";
+        const char* turnHistogramsFilename = "turnHistograms.dat";
+        const char* flopCentroidsFilename = "flopCentroids.dat";
+        const char* turnCentroidsFilename = "turnCentroids.dat"; 
+
+        constexpr int nBuckets = 200;
+    };
 
     struct HandStats
     {
@@ -123,13 +128,11 @@ namespace EHS
         hand_indexer_t turn_indexer;
         assert(hand_indexer_init(3, (const uint8_t[]){2,3,1}, &turn_indexer));
         uint64_t nCanonicalHandsTurn = hand_indexer_size(&turn_indexer, 2);
-        uint64_t nHistogramsTurn = nCanonicalHandsTurn;
-        auto turnHistograms = Memory::getMmap<Histogram>(turnHistogramsFilename, nHistogramsTurn);
+        auto turnHistograms = Memory::getMmap<Histogram>(AbstractionsContext::turnHistogramsFilename, nCanonicalHandsTurn);
         if (!turnHistograms) return;
         
         uint64_t nCanonicalHandsFlop = hand_indexer_size(&turn_indexer, 1);
-        uint64_t nHistogramsFlop = nCanonicalHandsFlop;
-        auto flopHistograms = Memory::getMmap<Histogram>(flopHistogramsFilename, nHistogramsFlop, false);
+        auto flopHistograms = Memory::getMmap<Histogram>(AbstractionsContext::flopHistogramsFilename, nCanonicalHandsFlop, false);
         if (!flopHistograms) return;
 
         for (int canonicalIndex = 0; 
@@ -177,12 +180,12 @@ namespace EHS
         
         uint64_t nCanonicalHandsRiver = hand_indexer_size(&river_indexer, 3);
         uint64_t nEHS = nCanonicalHandsRiver;
-        auto riverEHS = Memory::getMmap<uint16_t>(riverEHSFilename, nEHS);
+        auto riverEHS = Memory::getMmap<uint16_t>(AbstractionsContext::riverEHSFilename, nEHS);
         if (!riverEHS) return;
 
         uint64_t nCanonicalHandsTurn = hand_indexer_size(&river_indexer, 2);
         uint64_t nHistograms = nCanonicalHandsTurn;
-        auto turnHistograms = Memory::getMmap<Histogram>(turnHistogramsFilename, nHistograms, false);
+        auto turnHistograms = Memory::getMmap<Histogram>(AbstractionsContext::turnHistogramsFilename, nHistograms, false);
         if (!turnHistograms) return;
 
         auto callback = [&river_indexer, &turnHistograms, &riverEHS](uint32_t start, uint32_t end, int threadid)
@@ -198,10 +201,7 @@ namespace EHS
                 if (uint32_t done = canonicalIndex-start; done % 1'000'000 == 0)
                 {
                     std::cout << threadid << ": " << (done/(double)total) * 100 << "%" << std::endl;
-                    auto endChrono = std::chrono::high_resolution_clock::now();
-                    auto timeElapsed = std::chrono::duration<double>(endChrono-startChrono).count();
-                    std::cout << "Time Elapsed: " << timeElapsed << " (s)" << std::endl;
-                    std::cout << "Time Remaining: " << ((timeElapsed*total)/done) - timeElapsed << " (s)" << std::endl;
+                    std::cout << "Time Remaining " << Time::timeRemaining(total, done, startChrono) << "(s)" << std::endl;
                 }
                 
                 uint8_t cards[6];
@@ -258,43 +258,75 @@ namespace EHS
 
         for_each(threads.begin(), threads.end(), [](auto& thread){ thread.join(); });
     }
-    
-    void writeRoundCentroids(const char* centroidsFilename, 
-        int nBuckets, 
-        std::unique_ptr<Histogram[], Memory::MmapDeleter<Histogram>>& histograms, 
-        PokerTypes::BettingRound round,
-        hand_indexer_t& canonicalIndexer)
-    {
-        auto centroids = Memory::getMmap<Histogram>(centroidsFilename, nBuckets, false);
-        if (!centroids) return;
 
-        int roundIndex = enumToInt(round);
+    void finalizeHistograms(int round, const char* filename)
+    {
+        hand_indexer_t river_indexer;
+        assert(hand_indexer_init(4, (const uint8_t[]){2,3,1,1}, &river_indexer));
+
+        uint64_t nCanonicalHands = hand_indexer_size(&river_indexer, round);
+        auto histograms = Memory::modifyMmap<Histogram>(filename, nCanonicalHands);
+
+        for (size_t i = 0; i < nCanonicalHands; ++i)
+        {
+            if (!histograms[i].isConvertedToPercent)
+            {
+                histograms[i].convertToPercent();
+            }
+        }
+    }
+
+    void generateRoundsHistograms()
+    {
+        generateTurnHistograms();
+        generateFlopHistograms();
         
-        uint64_t nCanonicalHands = hand_indexer_size(&canonicalIndexer, roundIndex);
-        uint64_t nHistograms = nCanonicalHands;
+        finalizeHistograms(1, AbstractionsContext::flopHistogramsFilename);
+        finalizeHistograms(2, AbstractionsContext::turnHistogramsFilename);
+    }
+
+    void writeRoundCentroids(const char* centroidsFilename, 
+        const char* histogramFilename,
+        int nBuckets, 
+        int roundIndex)
+    {
+        std::cout << "Computing and writing centroids for " << centroidsFilename << std::endl;
+        hand_indexer_t river_indexer;
+        assert(hand_indexer_init(4, (const uint8_t[]){2,3,1,1}, &river_indexer));
+        uint64_t nCanonicalHands = hand_indexer_size(&river_indexer, roundIndex);
+        auto histograms = Memory::getMmap<Histogram>(histogramFilename, nCanonicalHands);
+
 
         std::vector<Histogram> result (nBuckets);
-        std::vector<Histogram> dataPoints (histograms.get(), histograms.get() + nHistograms);
+        std::span<Histogram> dataPoints (histograms.get(), histograms.get() + nCanonicalHands);
         result = KMeans::kMeansClustering<PokerTypes::Histogram, 
             KMeans::EMDDistance<PokerTypes::Histogram>, 
-            KMeans::PipePipeCentroidsInitializer<PokerTypes::Histogram, KMeans::EMDDistance<PokerTypes::Histogram>>
+            KMeans::PipePipeCentroidsInitializer<PokerTypes::Histogram, KMeans::EMDDistance<PokerTypes::Histogram>, 0, std::span<PokerTypes::Histogram>>
             > (nBuckets, dataPoints);
-        // std::vector<Histogram> dataPoints (histograms.get(), histograms.get() + nHistograms);
-        // result = KMeans::kMeansClustering<PokerTypes::Histogram, 
-        //     KMeans::EMDDistance<PokerTypes::Histogram>, 
-        //     KMeans::PipePipeCentroidsInitializer<PokerTypes::Histogram, KMeans::EMDDistance<PokerTypes::Histogram>, 42>
-        //     > (nBuckets, dataPoints);
-        
-        // std::span<Histogram> dataPoints (histograms.get(), histograms.get() + nHistograms);
-        // result = KMeans::kMeansClustering<PokerTypes::Histogram, 
-        //     KMeans::EMDDistance<PokerTypes::Histogram>, 
-        //     KMeans::PipePipeCentroidsInitializer<PokerTypes::Histogram, KMeans::EMDDistance<PokerTypes::Histogram>, 42, std::span<PokerTypes::Histogram>>
-        //     > (nBuckets, dataPoints);
 
+        
+        auto centroids = Memory::getMmap<Histogram>(centroidsFilename, nBuckets, false);
         for (int i = 0; i < nBuckets; ++i)
         {
             centroids[i] = std::move(result[i]);
         }
+    }
+
+    void writeRoundsCentroids()
+    {
+        writeRoundCentroids(AbstractionsContext::flopCentroidsFilename,
+            AbstractionsContext::flopHistogramsFilename, 
+            AbstractionsContext::nBuckets, 1); 
+        
+        writeRoundCentroids(AbstractionsContext::turnCentroidsFilename,
+            AbstractionsContext::turnHistogramsFilename, 
+            AbstractionsContext::nBuckets, 2);
+    }
+
+    void createRoundsAbstractions()
+    {
+        generateRoundsHistograms();
+        writeRoundsCentroids();
     }
 
     void generateRiverEHS()
@@ -310,7 +342,7 @@ namespace EHS
         // a hand will win against a random hand pick according to a uniform distribution.
         // We use uint16_t to store a EHS. To map the stored value to a number between 0 and 1,
         // divide the stored value by 10'000.
-        auto riverEHS = Memory::getMmap<uint16_t>(riverEHSFilename, nEHS, false);
+        auto riverEHS = Memory::getMmap<uint16_t>(AbstractionsContext::riverEHSFilename, nEHS, false);
         if (!riverEHS) return;
 
         auto callback = [&river_indexer, &riverEHS](uint32_t start, uint32_t end, int threadid)
@@ -382,7 +414,7 @@ namespace EHS
         // a hand will win against a random hand pick according to a uniform distribution.
         // We use uint16_t to store a EHS. To map the stored value to a number between 0 and 1,
         // divide the stored value by 10'000.
-        auto riverEHS = Memory::getMmap<uint16_t>(riverEHSFilename, nEHS, false);
+        auto riverEHS = Memory::getMmap<uint16_t>(AbstractionsContext::riverEHSFilename, nEHS, false);
         if (!riverEHS) return;
 
         auto callback = [&river_indexer, &riverEHS](uint32_t start, uint32_t end, int threadid)

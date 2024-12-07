@@ -244,17 +244,17 @@ double assignPointsToCluster(Clusters<T>& clusters,
 
     std::atomic<double> error {0.0};
     std::mutex mutex;
-    thread_local Clusters<size_t> threadCluster (clusters.size(), std::vector<size_t>());
 
     // Assign each point to the cluster with the nearest centroid.
     auto callback = [&clusters, &points, &pointToClusterIndex, &interCentroidDistances, &sortedInterCentroidDistances, &centroids, &error, &mutex](size_t start, size_t end, int threadId)
     {
+        Clusters<size_t> threadClusters (clusters.size(), std::vector<size_t>());
         auto startTime = std::chrono::high_resolution_clock::now();
         for (int pointIndex = start; pointIndex < end; ++pointIndex)
         {
             if ((pointIndex-start) % 1'000'000 == 0 && threadId == 0)
             {
-                std::cout << "Time remaining for iteration " << Time::timeRemaining(end-start, pointIndex-start, startTime);
+                std::cout << "Iteration Time Remaining: " << Time::timeRemaining(end-start, pointIndex-start, startTime) << "s" << std::endl;
             }
             const auto& point = points[pointIndex];
 
@@ -282,15 +282,15 @@ double assignPointsToCluster(Clusters<T>& clusters,
                 }
             }
 
-            threadCluster[nearestClusterIndex].push_back(pointIndex);
+            threadClusters[nearestClusterIndex].push_back(pointIndex);
 
             error += std::pow(nearestClusterDistance, 2);
         }
         {
             std::lock_guard<std::mutex> lock(mutex);
-            for (int clusterIndex = 0; clusterIndex < threadCluster.size(); ++clusterIndex)
+            for (int clusterIndex = 0; clusterIndex < threadClusters.size(); ++clusterIndex)
             {
-                const auto& pointIndexes = threadCluster[clusterIndex];
+                const auto& pointIndexes = threadClusters[clusterIndex];
                 for (auto index : pointIndexes)
                 {
                     clusters[clusterIndex].push_back(points[index]);
@@ -366,15 +366,15 @@ struct PlusPlusCentroidsInitializer
         size_t random_index = get_random_index(mt);
         centroids.insert({random_index, points[random_index]});
 
+        std::cout << "PlusPlus Selecting Centroids" << std::endl;
+        auto startTime = std::chrono::high_resolution_clock::now();
         while (centroids.size() != nClusters)
         {
-            auto startTime = std::chrono::high_resolution_clock::now();
+            std::cout << centroids.size() << "/" << nClusters << " centroids found." << std::endl;
             std::vector<std::pair<int, double>> probabilities = probabilitiesToBeNextCentroid(centroids, points);
             size_t random_index = selectWeightedRandomIndex(probabilities);
             centroids.insert({random_index, points[random_index]});
-            auto endTime = std::chrono::high_resolution_clock::now();
-            std::cout << centroids.size() << "/" << nClusters << " centroids found." << std::endl;
-            std::cout << "Time Left (s): " << std::chrono::duration<double>(endTime-startTime).count() * (nClusters - centroids.size()) << std::endl;
+            std::cout << "Time Remaining: " << Time::timeRemaining(nClusters, centroids.size(), startTime) << "s" << std::endl;
         }
 
         return centroids;
@@ -475,8 +475,9 @@ bool updateClustersCentroid(std::vector<T>& centroids,
     float epsilon)
 {
     std::atomic<bool> hasConverged = true;
+    std::atomic<double> mxDistance = 0.0;
 
-    auto callback = [&hasConverged, &clusters, &centroids, &epsilon](size_t start, size_t end, int threadId)
+    auto callback = [&hasConverged, &clusters, &centroids, &epsilon, &mxDistance](size_t start, size_t end, int threadId)
     {
         TDistanceFunction distanceFunctor{};
         for (size_t i = start; i < end; ++i)
@@ -484,6 +485,7 @@ bool updateClustersCentroid(std::vector<T>& centroids,
             const T oldCentroid = centroids[i];
             centroids[i] = calculateClusterCentroid(clusters[i], oldCentroid);
             double distance = distanceFunctor(oldCentroid, centroids[i]);
+            mxDistance = std::max(mxDistance.load(), distance);
             if (distance > epsilon)
             {
                 hasConverged = false;
@@ -492,6 +494,11 @@ bool updateClustersCentroid(std::vector<T>& centroids,
     };
 
     Thread::startThreadedLoop(callback, centroids.size(), nThreads);
+    
+    if (!hasConverged)
+    {
+        std::cout << "A centroid has moved by " << mxDistance << " which is more than epsilon=" << epsilon << std::endl;
+    }
     return hasConverged;
 }
 
@@ -504,32 +511,45 @@ template <
     typename TCentroidsInitializer = RandomCentroidsInitializer<T, TDistanceFunction>,
     typename TContainer = std::vector<T>
 >
-std::vector<T> kMeansClustering(int nClusters, const TContainer& points, float epsilon = 0.1)
+std::vector<T> kMeansClustering(int nClusters, const TContainer& points, float epsilon = 2.0, int nIterations = 75)
 {
     assert(nClusters <= points.size() && "Requesting more clusters than there are data points.");
-    auto centroids = TCentroidsInitializer{}(nClusters, points);
-    Clusters<T> clusters(nClusters, std::vector<T>());
-    std::vector<size_t> pointToClusterIndex (points.size(), 0);
+    int nRuns = 2;
+    std::vector<std::vector<T>> centroidsValuesCandidates;
+    std::pair<size_t, double> bestCandidate = {0, std::numeric_limits<double>::max()};
 
-    std::vector<T> centroidsValues;
-    centroidsValues.reserve(centroids.size());
-    std::transform(centroids.begin(), centroids.end(),
-        std::back_inserter(centroidsValues),
-        [](const auto& kv){ return kv.second; });
-
-    auto startTime = std::chrono::high_resolution_clock::now();
-    bool hasConverged {false};
-    do
+    for (int runIndex = 0; runIndex < nRuns; ++runIndex)
     {
-        double totalError = assignPointsToCluster(clusters, pointToClusterIndex, centroidsValues, points);
+        auto centroids = TCentroidsInitializer{}(nClusters, points);
+        Clusters<T> clusters(nClusters, std::vector<T>());
+        std::vector<size_t> pointToClusterIndex (points.size(), 0);
 
-        hasConverged = updateClustersCentroid<T, TDistanceFunction>(centroidsValues, clusters, epsilon);
-        auto endTime = std::chrono::high_resolution_clock::now();
-        std::cout << "Lloyd's iteration (error=" << totalError << ") took: " << std::chrono::duration<double>(endTime-startTime).count() << "(s)" << std::endl;
-        startTime = std::chrono::high_resolution_clock::now();
-    } while (!hasConverged);
+        std::vector<T> centroidsValues;
+        centroidsValues.reserve(centroids.size());
+        std::transform(centroids.begin(), centroids.end(),
+            std::back_inserter(centroidsValues),
+            [](const auto& kv){ return kv.second; });
 
-    return centroidsValues;
+        bool hasConverged {false};
+        double totalError = std::numeric_limits<double>::max();
+        int iteration = 0;
+        do
+        {
+            totalError = assignPointsToCluster<T, TDistanceFunction, TContainer>(clusters, pointToClusterIndex, centroidsValues, points);
+
+            hasConverged = updateClustersCentroid<T, TDistanceFunction>(centroidsValues, clusters, epsilon);
+            ++iteration;
+            std::cout << "Lloyd's iteration (error=" << totalError << ")" << std::endl;
+        } while (!hasConverged || iteration < nIterations);
+
+        centroidsValuesCandidates.push_back(std::move(centroidsValues));
+        if (totalError <= bestCandidate.second)
+        {
+            bestCandidate = {runIndex, totalError};
+        }
+    }
+
+    return centroidsValuesCandidates[bestCandidate.first];
 }
 
 // NOTE: from https://vldb.org/pvldb/vol5/p622_bahmanbahmani_vldb2012.pdf
@@ -564,10 +584,11 @@ struct PipePipeCentroidsInitializer
         // double phi = clusterCost<T, TDistanceFunction, TContainer>(points, {centroids[random_index]});
         // int nIterations = std::log(phi) + 1;
         // NOTE (keb): 8 has been found to be good experimentally.
-        // Here, I use r = 5 and l = k, trading quality for time.
+        // Here, I use r = 5 and l = 2*k.
         constexpr int nIterations = 5;
-        int lambda = nClusters;
+        int lambda = nClusters * 2;
 
+        std::cout << "PipePipe Selecting Intermediate Centroids" << std::endl;
         for (int i = 0; i < nIterations; ++i)
         {
             std::cout << "Iteration: " << i+1 << "/" << nIterations << std::endl;
@@ -596,7 +617,8 @@ struct PipePipeCentroidsInitializer
             centroidsValues.push_back(centroid);
         }
 
-        assignPointsToCluster(clusters, pointToClusterIndex, centroidsValues, points);
+        std::cout << "Computing Intermediate Centroids Weight" << std::endl;
+        assignPointsToCluster<T, TDistanceFunction, TContainer>(clusters, pointToClusterIndex, centroidsValues, points);
 
         for (int i = 0; i < centroidsValues.size(); ++i)
         {

@@ -9,45 +9,48 @@ extern "C"
 
 #include <chrono>
 #include <cstring>
+#include <iomanip>
 #include <iostream>
 
 #include <sys/mman.h>
 #include <errno.h>
 
+namespace TMP 
+{
+    const char* riverEHSFilename = "ehs.dat";
+    const char* flopHistogramsFilename = "flopHistograms.dat";
+    const char* turnHistogramsFilename = "turnHistograms.dat";
+    const char* flopCentroidsFilename = "flopCentroids.dat";
+    const char* turnCentroidsFilename = "turnCentroids.dat"; 
+
+    constexpr int nBuckets = 200;
+};
+
 int main()
 {
     using namespace PokerTypes;
 
+    EHS::createRoundsAbstractions();
 
     // EHS::generateFlopHistograms();
-        
-    hand_indexer_t turn_indexer;
-    assert(hand_indexer_init(3, (const uint8_t[]){2,3,1}, &turn_indexer));
-    uint64_t nCanonicalHandsTurn = hand_indexer_size(&turn_indexer, 2);
-    auto histogramsTurn = Memory::getMmap<Histogram>("turnHistograms.dat", nCanonicalHandsTurn);
+    // EHS::finalizeHistograms(1, TMP::flopHistogramsFilename);
+    // EHS::writeRoundCentroids(TMP::flopCentroidsFilename, TMP::flopHistogramsFilename, TMP::nBuckets, 1);
     
-    // hand_indexer_t flop_indexer;
-    // assert(hand_indexer_init(2, (const uint8_t[]){2,3}, &flop_indexer));
-    // uint64_t nCanonicalHandsFlop = hand_indexer_size(&flop_indexer, 1);
-    // auto histogramsFlop = Memory::getMmap<Histogram>("flopHistograms.dat", nCanonicalHandsFlop);
+    //  EHS::finalizeHistograms(2, TMP::turnHistogramsFilename);
 
-    // uint8_t cards[] = {0, 29, 5, 17, 40, 41};
-    // auto ti = hand_index_last(&turn_indexer, cards);
-    // Histogram& h = histograms[ti];
-    // std::cout << h.getPercent().toString() << std::endl;
-    
-    // uint8_t cards[] = {49, 50, 51, 17, 40};
-    // auto fi = hand_index_last(&flop_indexer, cards);
-    // Histogram& h = histogramsFlop[fi];
-    // std::cout << h.getPercent().toString() << std::endl;
+    // hand_indexer_t river_indexer;
+    // assert(hand_indexer_init(4, (const uint8_t[]){2,3,1,1}, &river_indexer));
+    // uint64_t nCanonicalHands = hand_indexer_size(&river_indexer, 2);
 
-    auto startTime = std::chrono::high_resolution_clock::now();
-    EHS::writeRoundCentroids("turnHistogramsCentroids0.dat", 200, histogramsTurn, BettingRound::Turn, turn_indexer); 
-    auto endTime = std::chrono::high_resolution_clock::now();
-    std::cout << "First KMEANS took: " << std::chrono::duration<double>(endTime - startTime).count() << std::endl;
-    
-    startTime = std::chrono::high_resolution_clock::now();
-    EHS::writeRoundCentroids("turnHistogramsCentroids1.dat", 200, histogramsTurn, BettingRound::Turn, turn_indexer); 
-    endTime = std::chrono::high_resolution_clock::now();
-    std::cout << "First KMEANS took: " << std::chrono::duration<double>(endTime - startTime).count() << std::endl;
+    // auto mp = Memory::getMmap<Histogram>(TMP::turnHistogramsFilename, nCanonicalHands);
+    // std::cout << std::fixed << std::setprecision(2);
+    // for (int i = 0; i < nCanonicalHands; ++i)
+    // {
+    //     const auto& h = mp[i];
+    //     for (int j = 0; j < h.size(); ++j)
+    //     {
+    //         assert(h[j] < 1);
+    //     }
+    // }
+
 }

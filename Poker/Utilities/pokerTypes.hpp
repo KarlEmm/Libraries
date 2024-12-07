@@ -3,6 +3,7 @@
 #include <random.hpp>
 
 #include <array>
+#include <cassert>
 #include <cstdint>
 #include <string>
 
@@ -12,6 +13,8 @@ namespace PokerTypes
 
 struct Histogram
 {
+	using Data = std::array<float, 50>;
+
 	Histogram() = default;
 	Histogram(const Histogram&) = default;
 	Histogram(Histogram&&) = default;
@@ -82,7 +85,7 @@ struct Histogram
 		return result;
 	}
 
-	void incrementBin(size_t binIndex, int n)
+	void incrementBin(size_t binIndex, int n = 1)
 	{
 		m_data[binIndex] += n;
 		m_nElementsStored += n;
@@ -92,13 +95,14 @@ struct Histogram
 	float& operator[](size_t index) { return m_data[index]; }
 	const float& operator[](size_t index) const { return m_data[index]; }
     
-	std::array<float, 30>::iterator begin() { return m_data.begin(); }
-	std::array<float, 30>::iterator end() { return m_data.end(); }
-    std::array<float, 30>::const_iterator begin() const { return m_data.begin(); }
-    std::array<float, 30>::const_iterator end() const { return m_data.end(); }
+	Data::iterator begin() { return m_data.begin(); }
+	Data::iterator end() { return m_data.end(); }
+	Data::const_iterator begin() const { return m_data.begin(); }
+	Data::const_iterator end() const { return m_data.end(); }
 
-	std::array<float, 50> m_data {0};
+	Data m_data {0};
 	uint32_t m_nElementsStored {0};
+	bool isConvertedToPercent {false};
 };
 
 namespace Constants
