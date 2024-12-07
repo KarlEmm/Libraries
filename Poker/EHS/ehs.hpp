@@ -135,6 +135,8 @@ namespace EHS
         auto flopHistograms = Memory::getMmap<Histogram>(AbstractionsContext::flopHistogramsFilename, nCanonicalHandsFlop, false);
         if (!flopHistograms) return;
 
+        std::cout << std::endl;
+        std::cout << "Generating Flop EHS Histograms" << std::endl;
         for (int canonicalIndex = 0; 
             canonicalIndex < nCanonicalHandsFlop; 
             ++canonicalIndex)
@@ -188,9 +190,10 @@ namespace EHS
         auto turnHistograms = Memory::getMmap<Histogram>(AbstractionsContext::turnHistogramsFilename, nHistograms, false);
         if (!turnHistograms) return;
 
+        std::cout << std::endl;
+        std::cout << "Generating Turn EHS Histograms" << std::endl;
         auto callback = [&river_indexer, &turnHistograms, &riverEHS](uint32_t start, uint32_t end, int threadid)
         {
-
             uint64_t total = end-start;
             auto startChrono = std::chrono::high_resolution_clock::now();
 
@@ -198,9 +201,8 @@ namespace EHS
                 canonicalIndex < end; 
                 ++canonicalIndex)
             {
-                if (uint32_t done = canonicalIndex-start; done % 1'000'000 == 0)
+                if (uint32_t done = canonicalIndex-start; done % 10'000'000 == 0 && threadid == 0)
                 {
-                    std::cout << threadid << ": " << (done/(double)total) * 100 << "%" << std::endl;
                     std::cout << "Time Remaining " << Time::timeRemaining(total, done, startChrono) << "(s)" << std::endl;
                 }
                 
@@ -290,6 +292,7 @@ namespace EHS
         int nBuckets, 
         int roundIndex)
     {
+        std::cout << std::endl;
         std::cout << "Computing and writing centroids for " << centroidsFilename << std::endl;
         hand_indexer_t river_indexer;
         assert(hand_indexer_init(4, (const uint8_t[]){2,3,1,1}, &river_indexer));
@@ -345,6 +348,8 @@ namespace EHS
         auto riverEHS = Memory::getMmap<uint16_t>(AbstractionsContext::riverEHSFilename, nEHS, false);
         if (!riverEHS) return;
 
+        std::cout << std::endl;
+        std::cout << "Generating River EHS" << std::endl;
         auto callback = [&river_indexer, &riverEHS](uint32_t start, uint32_t end, int threadid)
         {
             auto startChrono = std::chrono::high_resolution_clock::now();
@@ -355,13 +360,9 @@ namespace EHS
 
             for (uint32_t i = start; i < end; ++i)
             {
-                if (uint32_t done = i-start; done % 1'000'000 == 0)
+                if (uint32_t done = i-start; done % 10'000'000 == 0 && threadid == 0)
                 {
-                    std::cout << threadid << ": " << (done/(double)total) * 100 << "%" << std::endl;
-                    auto endChrono = std::chrono::high_resolution_clock::now();
-                    auto timeElapsed = std::chrono::duration<double>(endChrono-startChrono).count();
-                    std::cout << "Time Elapsed: " << timeElapsed << " (s)" << std::endl;
-                    std::cout << "Time Remaining: " << ((timeElapsed*total)/done) - timeElapsed << " (s)" << std::endl;
+                    std::cout << "Time Remaining: " << Time::timeRemaining(end-start, i-start, startChrono) << " (s)" << std::endl;
                 }
 
                 uint8_t cards[7];
@@ -417,6 +418,8 @@ namespace EHS
         auto riverEHS = Memory::getMmap<uint16_t>(AbstractionsContext::riverEHSFilename, nEHS, false);
         if (!riverEHS) return;
 
+        std::cout << std::endl;
+        std::cout << "Generating River OCHS" << std::endl;
         auto callback = [&river_indexer, &riverEHS](uint32_t start, uint32_t end, int threadid)
         {
             auto startChrono = std::chrono::high_resolution_clock::now();
@@ -427,13 +430,9 @@ namespace EHS
 
             for (uint32_t i = start; i < end; ++i)
             {
-                if (uint32_t done = i-start; done % 1'000'000 == 0)
+                if (uint32_t done = i-start; done % 1'000'000 == 0 && threadid == 0)
                 {
-                    std::cout << threadid << ": " << (done/(double)total) * 100 << "%" << std::endl;
-                    auto endChrono = std::chrono::high_resolution_clock::now();
-                    auto timeElapsed = std::chrono::duration<double>(endChrono-startChrono).count();
-                    std::cout << "Time Elapsed: " << timeElapsed << " (s)" << std::endl;
-                    std::cout << "Time Remaining: " << ((timeElapsed*total)/done) - timeElapsed << " (s)" << std::endl;
+                    std::cout << "Time Remaining: " << Time::timeRemaining(end-start, i-start, startChrono) << " (s)" << std::endl;
                 }
 
                 uint8_t cards[7];
