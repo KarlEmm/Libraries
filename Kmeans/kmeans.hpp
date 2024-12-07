@@ -520,6 +520,8 @@ std::vector<T> kMeansClustering(int nClusters, const TContainer& points, float e
 
     for (int runIndex = 0; runIndex < nRuns; ++runIndex)
     {
+        std::cout << std::endl;
+        std::cout << "Lloyd's Run: " << runIndex+1 << "/" << nRuns << std::endl;
         auto centroids = TCentroidsInitializer{}(nClusters, points);
         Clusters<T> clusters(nClusters, std::vector<T>());
         std::vector<size_t> pointToClusterIndex (points.size(), 0);
@@ -588,6 +590,7 @@ struct PipePipeCentroidsInitializer
         constexpr int nIterations = 5;
         int lambda = nClusters * 2;
 
+        std::cout << std::endl;
         std::cout << "PipePipe Selecting Intermediate Centroids" << std::endl;
         for (int i = 0; i < nIterations; ++i)
         {

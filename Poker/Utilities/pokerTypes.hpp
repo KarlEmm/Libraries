@@ -11,9 +11,10 @@ namespace PokerTypes
 {
 
 
+template <int N = 50>
 struct Histogram
 {
-	using Data = std::array<float, 50>;
+	using Data = std::array<float, N>;
 
 	Histogram() = default;
 	Histogram(const Histogram&) = default;

@@ -30,7 +30,7 @@ int main()
 {
     using namespace PokerTypes;
 
-    EHS::createRoundsAbstractions();
+    // EHS::createRoundsAbstractions();
 
     // EHS::generateFlopHistograms();
     // EHS::finalizeHistograms(1, TMP::flopHistogramsFilename);
@@ -38,19 +38,21 @@ int main()
     
     //  EHS::finalizeHistograms(2, TMP::turnHistogramsFilename);
 
-    // hand_indexer_t river_indexer;
-    // assert(hand_indexer_init(4, (const uint8_t[]){2,3,1,1}, &river_indexer));
-    // uint64_t nCanonicalHands = hand_indexer_size(&river_indexer, 2);
+    hand_indexer_t river_indexer;
+    assert(hand_indexer_init(4, (const uint8_t[]){2,3,1,1}, &river_indexer));
+    uint64_t nCanonicalHands = hand_indexer_size(&river_indexer, 1);
 
-    // auto mp = Memory::getMmap<Histogram>(TMP::turnHistogramsFilename, nCanonicalHands);
-    // std::cout << std::fixed << std::setprecision(2);
-    // for (int i = 0; i < nCanonicalHands; ++i)
-    // {
-    //     const auto& h = mp[i];
-    //     for (int j = 0; j < h.size(); ++j)
-    //     {
-    //         assert(h[j] < 1);
-    //     }
-    // }
+    nCanonicalHands = TMP::nBuckets;
+    auto mp = Memory::getMmap<Histogram<50>>(TMP::turnCentroidsFilename, nCanonicalHands);
+    for (int i = 0; i < nCanonicalHands; ++i)
+    {
+        const auto& h = mp[i];
+        for (int j = 0; j < h.size(); ++j)
+        {
+            std::cout << h[j] << ", ";
+        }
+        std::cout << std::endl;
+        std::cout << std::endl;
+    }
 
 }

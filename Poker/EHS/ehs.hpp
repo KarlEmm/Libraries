@@ -38,12 +38,15 @@ namespace EHS
     namespace AbstractionsContext
     {
         const char* riverEHSFilename = "ehs.dat";
+        const char* riverOCHSFilename = "riverOchs.dat";
         const char* flopHistogramsFilename = "flopHistograms.dat";
         const char* turnHistogramsFilename = "turnHistograms.dat";
         const char* flopCentroidsFilename = "flopCentroids.dat";
         const char* turnCentroidsFilename = "turnCentroids.dat"; 
 
         constexpr int nBuckets = 200;
+        constexpr int nEHSHistogramsBins = 50;
+        constexpr int nOCHSHistogramsBins = 8;
     };
 
     struct HandStats
@@ -98,6 +101,38 @@ namespace EHS
         float result = (stats.winner + (stats.draw / 2.0)) / (stats.winner + stats.loser + stats.draw);
         return result;
     }
+    
+    inline Histogram<AbstractionsContext::nOCHSHistogramsBins> getOCHS(const std::array<PokerTypes::Card, 2>& myCards, const std::array<PokerTypes::Card, 5>& boardCards, const std::bitset<52>& deck)
+    {
+        using namespace PokerTypes;
+        HandStats stats;
+        int myRank = evaluate_7cards(myCards[0], myCards[1], boardCards[0], boardCards[1], boardCards[2], boardCards[3], boardCards[4]);
+
+        Histogram<AbstractionsContext::nOCHSHistogramsBins> result;
+
+        for (int i = 0; i < 8; ++i)
+        {
+            // TODO: getEHS against a specific HAND RANGE.
+            // result[i] = getEHS()
+        }
+        // for (int o1 = 0; o1 < 52; ++o1)
+        // {
+        //     if (deck.test(o1)) [[unlikely]]
+        //         continue;
+        //     for (int o2 = o1+1; o2 < 52; ++o2)
+        //     {
+        //         if (deck.test(o2)) [[unlikely]]
+        //             continue;
+
+        //         int theirRank = evaluate_7cards(o1, o2, boardCards[0], boardCards[1], boardCards[2], boardCards[3], boardCards[4]);
+
+        //         myRank < theirRank ? ++stats.winner : myRank > theirRank ? ++stats.loser : ++stats.draw;
+        //     }
+        // }
+
+        // float result = (stats.winner + (stats.draw / 2.0)) / (stats.winner + stats.loser + stats.draw);
+        return result;
+    }
 
     constexpr int nCr(int n, int r)
     {
@@ -128,11 +163,11 @@ namespace EHS
         hand_indexer_t turn_indexer;
         assert(hand_indexer_init(3, (const uint8_t[]){2,3,1}, &turn_indexer));
         uint64_t nCanonicalHandsTurn = hand_indexer_size(&turn_indexer, 2);
-        auto turnHistograms = Memory::getMmap<Histogram>(AbstractionsContext::turnHistogramsFilename, nCanonicalHandsTurn);
+        auto turnHistograms = Memory::getMmap<Histogram<AbstractionsContext::nEHSHistogramsBins>>(AbstractionsContext::turnHistogramsFilename, nCanonicalHandsTurn);
         if (!turnHistograms) return;
         
         uint64_t nCanonicalHandsFlop = hand_indexer_size(&turn_indexer, 1);
-        auto flopHistograms = Memory::getMmap<Histogram>(AbstractionsContext::flopHistogramsFilename, nCanonicalHandsFlop, false);
+        auto flopHistograms = Memory::getMmap<Histogram<AbstractionsContext::nEHSHistogramsBins>>(AbstractionsContext::flopHistogramsFilename, nCanonicalHandsFlop, false);
         if (!flopHistograms) return;
 
         std::cout << std::endl;
@@ -187,7 +222,7 @@ namespace EHS
 
         uint64_t nCanonicalHandsTurn = hand_indexer_size(&river_indexer, 2);
         uint64_t nHistograms = nCanonicalHandsTurn;
-        auto turnHistograms = Memory::getMmap<Histogram>(AbstractionsContext::turnHistogramsFilename, nHistograms, false);
+        auto turnHistograms = Memory::getMmap<Histogram<AbstractionsContext::nEHSHistogramsBins>>(AbstractionsContext::turnHistogramsFilename, nHistograms, false);
         if (!turnHistograms) return;
 
         std::cout << std::endl;
@@ -267,7 +302,7 @@ namespace EHS
         assert(hand_indexer_init(4, (const uint8_t[]){2,3,1,1}, &river_indexer));
 
         uint64_t nCanonicalHands = hand_indexer_size(&river_indexer, round);
-        auto histograms = Memory::modifyMmap<Histogram>(filename, nCanonicalHands);
+        auto histograms = Memory::modifyMmap<Histogram<AbstractionsContext::nEHSHistogramsBins>>(filename, nCanonicalHands);
 
         for (size_t i = 0; i < nCanonicalHands; ++i)
         {
@@ -297,18 +332,18 @@ namespace EHS
         hand_indexer_t river_indexer;
         assert(hand_indexer_init(4, (const uint8_t[]){2,3,1,1}, &river_indexer));
         uint64_t nCanonicalHands = hand_indexer_size(&river_indexer, roundIndex);
-        auto histograms = Memory::getMmap<Histogram>(histogramFilename, nCanonicalHands);
+        auto histograms = Memory::getMmap<Histogram<AbstractionsContext::nEHSHistogramsBins>>(histogramFilename, nCanonicalHands);
 
 
-        std::vector<Histogram> result (nBuckets);
-        std::span<Histogram> dataPoints (histograms.get(), histograms.get() + nCanonicalHands);
-        result = KMeans::kMeansClustering<PokerTypes::Histogram, 
-            KMeans::EMDDistance<PokerTypes::Histogram>, 
-            KMeans::PipePipeCentroidsInitializer<PokerTypes::Histogram, KMeans::EMDDistance<PokerTypes::Histogram>, 0, std::span<PokerTypes::Histogram>>
+        std::vector<Histogram<AbstractionsContext::nEHSHistogramsBins>> result (nBuckets);
+        std::span<Histogram<AbstractionsContext::nEHSHistogramsBins>> dataPoints (histograms.get(), histograms.get() + nCanonicalHands);
+        result = KMeans::kMeansClustering<Histogram<AbstractionsContext::nEHSHistogramsBins>, 
+            KMeans::EMDDistance<Histogram<AbstractionsContext::nEHSHistogramsBins>>, 
+            KMeans::PipePipeCentroidsInitializer<Histogram<AbstractionsContext::nEHSHistogramsBins>, KMeans::EMDDistance<Histogram<AbstractionsContext::nEHSHistogramsBins>>, 0, std::span<Histogram<AbstractionsContext::nEHSHistogramsBins>>>
             > (nBuckets, dataPoints);
 
         
-        auto centroids = Memory::getMmap<Histogram>(centroidsFilename, nBuckets, false);
+        auto centroids = Memory::getMmap<Histogram<AbstractionsContext::nEHSHistogramsBins>>(centroidsFilename, nBuckets, false);
         for (int i = 0; i < nBuckets; ++i)
         {
             centroids[i] = std::move(result[i]);
@@ -354,7 +389,6 @@ namespace EHS
         {
             auto startChrono = std::chrono::high_resolution_clock::now();
             uint32_t total = end-start;
-            std::cout << std::fixed << std::setprecision(2);
             std::array<Card, 2> privateCards;
             std::array<Card, 5> publicCards;
 
@@ -381,23 +415,8 @@ namespace EHS
             }
         };
 
-        constexpr int nThreads = 12; 
-        uint32_t blockSize = nCanonicalHands / nThreads;
-        uint32_t leftover = nCanonicalHands % nThreads;
-        std::vector<std::thread> threads;
-        for (int i = 0; i < nThreads; ++i)
-        {
-            if (i == nThreads-1)
-            {
-                threads.emplace_back(callback, i*blockSize, i*blockSize+blockSize+leftover, i);
-                break;
-            }
-            threads.emplace_back(callback, i*blockSize, i*blockSize+blockSize, i);
-        }
-
-        for_each(threads.begin(), threads.end(), [](auto& thread){ thread.join(); });
+        Thread::startThreadedLoop(callback, nCanonicalHands, 12);
     }
-
 
     void generateRiverOCHS()
     {
@@ -410,21 +429,14 @@ namespace EHS
         assert(hand_indexer_init(4, (const uint8_t[]){2,3,1,1}, &river_indexer));
 
         uint64_t nCanonicalHands = hand_indexer_size(&river_indexer, 3);
-        uint64_t nEHS = nCanonicalHands;
-        // NOTE (keb): a EHS is number between 0 and 1 representing the probability
-        // a hand will win against a random hand pick according to a uniform distribution.
-        // We use uint16_t to store a EHS. To map the stored value to a number between 0 and 1,
-        // divide the stored value by 10'000.
-        auto riverEHS = Memory::getMmap<uint16_t>(AbstractionsContext::riverEHSFilename, nEHS, false);
-        if (!riverEHS) return;
+        auto riverOCHS = Memory::getMmap<Histogram<AbstractionsContext::nOCHSHistogramsBins>>(AbstractionsContext::riverOCHSFilename, nCanonicalHands, false);
 
         std::cout << std::endl;
         std::cout << "Generating River OCHS" << std::endl;
-        auto callback = [&river_indexer, &riverEHS](uint32_t start, uint32_t end, int threadid)
+        auto callback = [&river_indexer, &riverOCHS](uint32_t start, uint32_t end, int threadid)
         {
             auto startChrono = std::chrono::high_resolution_clock::now();
             uint32_t total = end-start;
-            std::cout << std::fixed << std::setprecision(2);
             std::array<Card, 2> privateCards;
             std::array<Card, 5> publicCards;
 
@@ -437,7 +449,10 @@ namespace EHS
 
                 uint8_t cards[7];
                 if (!hand_unindex(&river_indexer, 3, i, cards))
+                {
+                    std::cerr << "Failed to unindex canonical index." << std::endl;
                     return;
+                }
                 
                 std::bitset<52> deck;
                 for (int i = 0; i < 7; ++i)
@@ -447,25 +462,11 @@ namespace EHS
 
                 privateCards = {Card(cards[0]), Card(cards[1])};
                 publicCards = {Card(cards[2]), Card(cards[3]), Card(cards[4]), Card(cards[5])};
-                riverEHS[i] = static_cast<uint16_t>(10000.0f * getEHS(privateCards, publicCards, deck));
+                riverOCHS[i] = getOCHS(privateCards, publicCards, deck);
             }
         };
 
-        constexpr int nThreads = 12; 
-        uint32_t blockSize = nCanonicalHands / nThreads;
-        uint32_t leftover = nCanonicalHands % nThreads;
-        std::vector<std::thread> threads;
-        for (int i = 0; i < nThreads; ++i)
-        {
-            if (i == nThreads-1)
-            {
-                threads.emplace_back(callback, i*blockSize, i*blockSize+blockSize+leftover, i);
-                break;
-            }
-            threads.emplace_back(callback, i*blockSize, i*blockSize+blockSize, i);
-        }
-
-        for_each(threads.begin(), threads.end(), [](auto& thread){ thread.join(); });
+        Thread::startThreadedLoop(callback, nCanonicalHands, 12);
     }
 
 
