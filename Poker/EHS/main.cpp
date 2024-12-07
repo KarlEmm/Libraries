@@ -30,28 +30,20 @@ int main()
 {
     using namespace PokerTypes;
 
-    // EHS::createRoundsAbstractions();
-
-    // EHS::generateFlopHistograms();
-    // EHS::finalizeHistograms(1, TMP::flopHistogramsFilename);
-    // EHS::writeRoundCentroids(TMP::flopCentroidsFilename, TMP::flopHistogramsFilename, TMP::nBuckets, 1);
-    
-    //  EHS::finalizeHistograms(2, TMP::turnHistogramsFilename);
-
     hand_indexer_t river_indexer;
     assert(hand_indexer_init(4, (const uint8_t[]){2,3,1,1}, &river_indexer));
     uint64_t nCanonicalHands = hand_indexer_size(&river_indexer, 1);
 
-    nCanonicalHands = TMP::nBuckets;
-    auto mp = Memory::getMmap<Histogram<50>>(TMP::turnCentroidsFilename, nCanonicalHands);
+    nCanonicalHands = hand_indexer_size(&river_indexer, 0);
+    uint8_t cards[2];
     for (int i = 0; i < nCanonicalHands; ++i)
     {
-        const auto& h = mp[i];
-        for (int j = 0; j < h.size(); ++j)
+        hand_unindex(&river_indexer, 0, i, cards);
+        std::cout << i << ":  ";
+        for (int j = 0; j < 2; ++j)
         {
-            std::cout << h[j] << ", ";
+            std::cout << (char)RANK_TO_CHAR[cards[j] >> 2] << (char)SUIT_TO_CHAR[cards[j] & 3] << " ";
         }
-        std::cout << std::endl;
         std::cout << std::endl;
     }
 
