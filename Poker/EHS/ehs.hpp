@@ -44,12 +44,14 @@ namespace EHS
         const char* turnHistogramsFilename = "turnHistograms.dat";
         const char* flopCentroidsFilename = "flopCentroids.dat";
         const char* turnCentroidsFilename = "turnCentroids.dat"; 
+        const char* riverCentroidsFilename = "riverCentroids.dat"; 
 
         constexpr int nBuckets = 200;
         constexpr int nEHSHistogramsBins = 50;
         constexpr int nOCHSHistogramsBins = 8;
-        
-        const std::unordered_map<uint64_t, int> preflopCanonicalIndexToOCHSIndex
+
+        std::vector<std::vector<std::pair<uint8_t, uint8_t>>> preflopOCHSBuckets (nOCHSHistogramsBins, std::vector<std::pair<uint8_t, uint8_t>>()); 
+        std::unordered_map<uint64_t, int> preflopCanonicalIndexToOCHSIndex
         {
             {0, 3},    // 22
             {1, 0},    // 23o
@@ -228,17 +230,6 @@ namespace EHS
         std::atomic<uint32_t> winner {0};
         std::atomic<uint32_t> loser {0};
         std::atomic<uint32_t> draw {0};
-        float pctWinner {0};
-        float pctLoser {0};
-        float pctDraw {0};
-
-        void updatePct()
-        {
-            uint64_t sum = winner + loser + draw;
-            pctWinner = winner / static_cast<double>(sum);
-            pctLoser = loser / static_cast<double>(sum);
-            pctDraw = draw / static_cast<double>(sum);
-        }
     };
 
     constexpr uint64_t factorial(int n, int qty)
@@ -276,35 +267,34 @@ namespace EHS
         return result;
     }
     
-    inline Histogram<AbstractionsContext::nOCHSHistogramsBins> getOCHS(const std::array<PokerTypes::Card, 2>& myCards, const std::array<PokerTypes::Card, 5>& boardCards, const std::bitset<52>& deck)
+    inline Histogram<AbstractionsContext::nOCHSHistogramsBins> getOCHS(const std::array<PokerTypes::Card, 2>& myCards, 
+        const std::array<PokerTypes::Card, 5>& boardCards, 
+        const std::bitset<52>& deck)
     {
         using namespace PokerTypes;
-        HandStats stats;
-        int myRank = evaluate_7cards(myCards[0], myCards[1], boardCards[0], boardCards[1], boardCards[2], boardCards[3], boardCards[4]);
+        const int myRank = evaluate_7cards(myCards[0], myCards[1], boardCards[0], boardCards[1], boardCards[2], boardCards[3], boardCards[4]);
 
+        HandStats stats[AbstractionsContext::nOCHSHistogramsBins];
         Histogram<AbstractionsContext::nOCHSHistogramsBins> result;
 
-        for (int i = 0; i < 8; ++i)
+        for (int ochsIndex = 0; ochsIndex < AbstractionsContext::nOCHSHistogramsBins; ++ochsIndex)
         {
-            // TODO: getEHS against a specific HAND RANGE.
-            // result[i] = getEHS()
+            for (const auto& cards : AbstractionsContext::preflopOCHSBuckets[ochsIndex])
+            {
+                if (deck.test(cards.first) || deck.test(cards.second)) [[unlikely]]
+                {
+                    continue;
+                }
+                const int theirRank = evaluate_7cards(cards.first, cards.second, boardCards[0], boardCards[1], boardCards[2], boardCards[3], boardCards[4]);
+
+                myRank < theirRank ? ++stats[ochsIndex].winner : myRank > theirRank ? ++stats[ochsIndex].loser : ++stats[ochsIndex].draw;
+            }
         }
-        // for (int o1 = 0; o1 < 52; ++o1)
-        // {
-        //     if (deck.test(o1)) [[unlikely]]
-        //         continue;
-        //     for (int o2 = o1+1; o2 < 52; ++o2)
-        //     {
-        //         if (deck.test(o2)) [[unlikely]]
-        //             continue;
 
-        //         int theirRank = evaluate_7cards(o1, o2, boardCards[0], boardCards[1], boardCards[2], boardCards[3], boardCards[4]);
-
-        //         myRank < theirRank ? ++stats.winner : myRank > theirRank ? ++stats.loser : ++stats.draw;
-        //     }
-        // }
-
-        // float result = (stats.winner + (stats.draw / 2.0)) / (stats.winner + stats.loser + stats.draw);
+        for (int ochsIndex = 0; ochsIndex < AbstractionsContext::nOCHSHistogramsBins; ++ochsIndex)
+        {
+            result[ochsIndex] = (stats[ochsIndex].winner + (stats[ochsIndex].draw / 2.0)) / (stats[ochsIndex].winner + stats[ochsIndex].loser + stats[ochsIndex].draw);
+        }
         return result;
     }
 
@@ -496,9 +486,10 @@ namespace EHS
         finalizeHistograms(2, AbstractionsContext::turnHistogramsFilename);
     }
 
+    template <int NHistogramBins, typename TDistanceFunction>
     void writeRoundCentroids(const char* centroidsFilename, 
         const char* histogramFilename,
-        int nBuckets, 
+        int nAbstractionBuckets, 
         int roundIndex)
     {
         std::cout << std::endl;
@@ -506,19 +497,18 @@ namespace EHS
         hand_indexer_t river_indexer;
         assert(hand_indexer_init(4, (const uint8_t[]){2,3,1,1}, &river_indexer));
         uint64_t nCanonicalHands = hand_indexer_size(&river_indexer, roundIndex);
-        auto histograms = Memory::getMmap<Histogram<AbstractionsContext::nEHSHistogramsBins>>(histogramFilename, nCanonicalHands);
+        auto histograms = Memory::getMmap<Histogram<NHistogramBins>>(histogramFilename, nCanonicalHands);
 
-
-        std::vector<Histogram<AbstractionsContext::nEHSHistogramsBins>> result (nBuckets);
-        std::span<Histogram<AbstractionsContext::nEHSHistogramsBins>> dataPoints (histograms.get(), histograms.get() + nCanonicalHands);
-        result = KMeans::kMeansClustering<Histogram<AbstractionsContext::nEHSHistogramsBins>, 
-            KMeans::EMDDistance<Histogram<AbstractionsContext::nEHSHistogramsBins>>, 
-            KMeans::PipePipeCentroidsInitializer<Histogram<AbstractionsContext::nEHSHistogramsBins>, KMeans::EMDDistance<Histogram<AbstractionsContext::nEHSHistogramsBins>>, 0, std::span<Histogram<AbstractionsContext::nEHSHistogramsBins>>>
-            > (nBuckets, dataPoints);
+        std::vector<Histogram<NHistogramBins>> result (nAbstractionBuckets);
+        std::span<Histogram<NHistogramBins>> dataPoints (histograms.get(), histograms.get() + nCanonicalHands);
+        result = KMeans::kMeansClustering<Histogram<NHistogramBins>, 
+            TDistanceFunction, 
+            KMeans::PipePipeCentroidsInitializer<Histogram<NHistogramBins>, TDistanceFunction, 0, std::span<Histogram<NHistogramBins>>>
+            > (nAbstractionBuckets, dataPoints);
 
         
-        auto centroids = Memory::getMmap<Histogram<AbstractionsContext::nEHSHistogramsBins>>(centroidsFilename, nBuckets, false);
-        for (int i = 0; i < nBuckets; ++i)
+        auto centroids = Memory::getMmap<Histogram<NHistogramBins>>(centroidsFilename, nAbstractionBuckets, false);
+        for (int i = 0; i < nAbstractionBuckets; ++i)
         {
             centroids[i] = std::move(result[i]);
         }
@@ -526,13 +516,17 @@ namespace EHS
 
     void writeRoundsCentroids()
     {
-        writeRoundCentroids(AbstractionsContext::flopCentroidsFilename,
+        writeRoundCentroids<AbstractionsContext::nEHSHistogramsBins, KMeans::EMDDistance<Histogram<AbstractionsContext::nEHSHistogramsBins>>>(AbstractionsContext::flopCentroidsFilename,
             AbstractionsContext::flopHistogramsFilename, 
             AbstractionsContext::nBuckets, 1); 
         
-        writeRoundCentroids(AbstractionsContext::turnCentroidsFilename,
+        writeRoundCentroids<AbstractionsContext::nEHSHistogramsBins, KMeans::EMDDistance<Histogram<AbstractionsContext::nEHSHistogramsBins>>>(AbstractionsContext::turnCentroidsFilename,
             AbstractionsContext::turnHistogramsFilename, 
             AbstractionsContext::nBuckets, 2);
+        
+        writeRoundCentroids<AbstractionsContext::nOCHSHistogramsBins, KMeans::L2Distance<Histogram<AbstractionsContext::nOCHSHistogramsBins>>>(AbstractionsContext::riverCentroidsFilename,
+            AbstractionsContext::riverOCHSFilename, 
+            AbstractionsContext::nBuckets, 3);
     }
 
     void createRoundsAbstractions()
@@ -562,7 +556,6 @@ namespace EHS
         auto callback = [&river_indexer, &riverEHS](uint32_t start, uint32_t end, int threadid)
         {
             auto startChrono = std::chrono::high_resolution_clock::now();
-            uint32_t total = end-start;
             std::array<Card, 2> privateCards;
             std::array<Card, 5> publicCards;
 
@@ -592,6 +585,8 @@ namespace EHS
         Thread::startThreadedLoop(callback, nCanonicalHands, 12);
     }
 
+    // NOTE (keb): Opponent Cluster Hand Strength
+    // https://poker.cs.ualberta.ca/publications/AAMAS13-abstraction.pdf
     void generateRiverOCHS()
     {
         // 8 hand ranges
@@ -601,6 +596,22 @@ namespace EHS
         
         hand_indexer_t river_indexer;
         assert(hand_indexer_init(4, (const uint8_t[]){2,3,1,1}, &river_indexer));
+        hand_indexer_t preflop_indexer;
+        assert(hand_indexer_init(1, (const uint8_t[]){2}, &preflop_indexer));
+
+        // NOTE (keb): Fill the Opponent Clusters with the appropriate hands.
+        uint8_t cards[2];
+        for (int card1 = 0; card1 < 52; ++card1)
+        {
+            for (int card2 = card1 + 1; card2 < 52; ++card2)
+            {
+                cards[0] = card1;
+                cards[1] = card2;
+                uint64_t index = hand_index_last(&preflop_indexer, cards);
+                int ochsIndex = AbstractionsContext::preflopCanonicalIndexToOCHSIndex[index];
+                AbstractionsContext::preflopOCHSBuckets[ochsIndex].push_back({card1, card2});
+            }
+        }
 
         uint64_t nCanonicalHands = hand_indexer_size(&river_indexer, 3);
         auto riverOCHS = Memory::getMmap<Histogram<AbstractionsContext::nOCHSHistogramsBins>>(AbstractionsContext::riverOCHSFilename, nCanonicalHands, false);
@@ -610,7 +621,6 @@ namespace EHS
         auto callback = [&river_indexer, &riverOCHS](uint32_t start, uint32_t end, int threadid)
         {
             auto startChrono = std::chrono::high_resolution_clock::now();
-            uint32_t total = end-start;
             std::array<Card, 2> privateCards;
             std::array<Card, 5> publicCards;
 
