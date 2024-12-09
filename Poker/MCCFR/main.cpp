@@ -1,15 +1,17 @@
+#include <kmeans.hpp>
 #include <memory.hpp>
 #include <pokerTypes.hpp>
-#include "random.hpp"
-#include "time.hpp"
+#include <random.hpp>
+#include <time.hpp>
 
-#include "phevaluator/phevaluator.h"
+#include <phevaluator/phevaluator.h>
 extern "C"
 {
     #include <hand_index.h>
 }
 
 #include <array>
+#include <cassert>
 #include <chrono>
 #include <iostream> // For debugging
 #include <numeric>
@@ -21,9 +23,15 @@ namespace MCCFR
 {
 using namespace PokerTypes;
 
-std::unique_ptr<Histogram<AbstractionsContext::nEHSHistogramsBins>[], Memory::MmapDeleter<Histogram<AbstractionsContext::nEHSHistogramsBins>>> flopCentroids;
-std::unique_ptr<Histogram<AbstractionsContext::nEHSHistogramsBins>[], Memory::MmapDeleter<Histogram<AbstractionsContext::nEHSHistogramsBins>>> turnCentroids;
-std::unique_ptr<Histogram<AbstractionsContext::nOCHSHistogramsBins>[], Memory::MmapDeleter<Histogram<AbstractionsContext::nOCHSHistogramsBins>>> riverCentroids;
+std::array<hand_indexer_t, (uint8_t)BettingRound::RoundCount> indexers;
+
+std::span<Histogram<AbstractionsContext::nEHSHistogramsBins>> flopHistograms;
+std::span<Histogram<AbstractionsContext::nEHSHistogramsBins>> turnHistograms;
+std::span<Histogram<AbstractionsContext::nOCHSHistogramsBins>> riverHistograms;
+
+std::span<Histogram<AbstractionsContext::nEHSHistogramsBins>> flopCentroids;
+std::span<Histogram<AbstractionsContext::nEHSHistogramsBins>> turnCentroids;
+std::span<Histogram<AbstractionsContext::nOCHSHistogramsBins>> riverCentroids;
 
 inline std::chrono::time_point<std::chrono::steady_clock> startTime;
 
@@ -43,7 +51,7 @@ struct Flags8Bits
 	void set(T index) { flags |= 1 << index; }
 	void unset(T index) { flags &= ~(1 << index); }
 	bool test(T index) { return flags & (1 << index); }
-	bool one() { return __popcnt(flags) == 1; }
+	bool one() { return __builtin_popcount(flags) == 1; }
 };
 
 enum Action : uint8_t
@@ -87,18 +95,6 @@ namespace Math
 	}
 };
 
-namespace Bits
-{
-	int lsbBitSet(uint32_t x) {
-		unsigned long index;
-		if (_BitScanForward(&index, x)) {
-			return (int)(index);
-		} else {
-			return 32;
-		}
-	}
-};
-
 namespace DebugGlobals
 {
 	int visited{ 0 };
@@ -111,10 +107,12 @@ struct Card
 	uint8_t rank : 6;
 	uint8_t suit : 2;
 
+	operator uint8_t() const {return (rank << 2) | (suit);}
+	operator uint8_t() {return (rank << 2) | (suit);}
+
 	operator int() { return (rank << 2) | (suit); }
 };
 
-using RiverHand = std::array<Card, Constants::nPrivateCards + Constants::nFlopCards + Constants::nTurnCards + Constants::nRiverCards>;
 
 struct Deck
 {
@@ -136,10 +134,12 @@ struct Deck
 		}
 	}
 	
-	std::array<Card, Constants::nPrivateCards> getPreflopHand(int playerIdx) const { return { deck[playerIdx * 2], deck[playerIdx * 2 + 1] }; } 
 	std::array<Card, Constants::nFlopCards> getFlopCards() const { return { deck[Constants::communityCardIndex], deck[Constants::communityCardIndex+1], deck[Constants::communityCardIndex+2] }; } 
 	std::array<Card, Constants::nTurnCards> getTurnCards() const { return { deck[Constants::communityCardIndex + 3] }; } 
 	std::array<Card, Constants::nRiverCards> getRiverCards() const { return { deck[Constants::communityCardIndex + 4] }; } 
+	
+	std::array<Card, Constants::nPrivateCards> getPreflopHand(int playerIdx) const { return { deck[playerIdx * 2], deck[playerIdx * 2 + 1] }; } 
+
 	std::array<Card, Constants::nPrivateCards + Constants::nFlopCards> getFlopHand(int playerIdx) const
 	{
 		const auto& preflopCards = getPreflopHand(playerIdx);
@@ -151,6 +151,7 @@ struct Deck
 
 		return flopHand;
 	}
+
 	std::array<Card, Constants::nPrivateCards + Constants::nFlopCards + Constants::nTurnCards> getTurnHand(int playerIdx) const
 	{
 		const auto& preflopCards = getPreflopHand(playerIdx);
@@ -164,6 +165,8 @@ struct Deck
 
 		return turnHand;
 	}
+
+	using RiverHand = std::array<Card, Constants::nPrivateCards + Constants::nFlopCards + Constants::nTurnCards + Constants::nRiverCards>;
 	RiverHand getRiverHand(int playerIdx) const
 	{
 		const auto& preflopCards = getPreflopHand(playerIdx);
@@ -187,10 +190,30 @@ struct Deck
 
 using FoldedPlayers = Flags8Bits<uint8_t>;
 
+inline int getPreviousPlayer(int currentPlayerId)
+{
+	return currentPlayerId == 0 ? Constants::nPlayers - 1 : currentPlayerId - 1;
+}
+
+inline int getNextPlayer(int currentPlayerId)
+{
+	return (currentPlayerId + 1) % Constants::nPlayers;
+}
+
+inline int getSBPlayerIdFromButton(int buttonPlayerId)
+{
+	return (buttonPlayerId + 1) % Constants::nPlayers;
+}
+
+inline int getBBPlayerIdFromButton(int buttonPlayerId)
+{
+	return (buttonPlayerId + 2) % Constants::nPlayers;
+}
+
 struct GameContext
 {
 	FoldedPlayers foldedPlayersStatus{ 0 };
-	BettingRound currentBettingRound{ Preflop };
+	BettingRound currentBettingRound{ BettingRound::Preflop };
 	int nBetInCurrentRound{ 0 };
 	std::array<int, Constants::nPlayers> stacks{ 0 };
 	std::array<int, Constants::nPlayers> moneyInPot{ 0 };
@@ -213,7 +236,7 @@ struct GameContext
 	{ 
 		return lastBettingPlayer == getBBPlayerIdFromButton(currentButtonPlayerId) && 
 			nBetInCurrentRound == 1 && 
-			currentBettingRound == Preflop; 
+			currentBettingRound == BettingRound::Preflop; 
 	}
 
 };
@@ -263,7 +286,7 @@ public:
 		}
 	}
 
-	const std::array<double, Action::Count>& calculateStrategy()
+	const std::array<float, Action::Count>& calculateStrategy()
 	{
 		int sum = 0;
 		for (int a = 0; a < Action::Count; ++a)
@@ -275,13 +298,13 @@ public:
 			}
 		}
 
-		int nAllowedActions = __popcnt(allowedActions.flags);
+		int nAllowedActions = __builtin_popcount(allowedActions.flags);
 		for (int a = 0; a < Action::Count; ++a)
 		{
 			Action action = static_cast<Action>(a);
 			if (allowedActions.test(action))
 			{
-				strategy[a] = sum > 0.0 ? ((regrets[a] <= 0 ? 0 : regrets[a]) / static_cast<double>(sum)) : (1.0 / nAllowedActions);
+				strategy[a] = sum > 0.0 ? ((regrets[a] <= 0 ? 0 : regrets[a]) / static_cast<float>(sum)) : (1.0 / nAllowedActions);
 			}
 		}
 
@@ -300,10 +323,10 @@ public:
 		}
 	}
 
-	const std::array<double, Action::Count>& getStrategy() { return strategy; }
+	const std::array<float, Action::Count>& getStrategy() { return strategy; }
 
 private:
-	std::array<double, Action::Count> strategy{ 0.0 };
+	std::array<float, Action::Count> strategy{ 0.0 };
 	std::array<int, Action::Count> regrets{ 0 };
 	Actions allowedActions{0};
 };
@@ -351,25 +374,6 @@ double toDouble(Action actionSize)
 	}
 }
 
-inline int getPreviousPlayer(int currentPlayerId)
-{
-	return currentPlayerId == 0 ? Constants::nPlayers - 1 : currentPlayerId - 1;
-}
-
-inline int getNextPlayer(int currentPlayerId)
-{
-	return (currentPlayerId + 1) % Constants::nPlayers;
-}
-
-inline int getSBPlayerIdFromButton(int buttonPlayerId)
-{
-	return (buttonPlayerId + 1) % Constants::nPlayers;
-}
-
-inline int getBBPlayerIdFromButton(int buttonPlayerId)
-{
-	return (buttonPlayerId + 2) % Constants::nPlayers;
-}
 
 // C.f. [PAPER] doi/abs/10.5555/2540128.2540148
 double pseudoHarmonicMapping(double min, double max, double v)
@@ -444,7 +448,7 @@ std::string getHandStr(int playerId, const Deck& deck, BettingRound round)
 	std::string result;
 	switch (round)
 	{
-	case Preflop:
+	case BettingRound::Preflop:
 	{
 		const auto& hand = deck.getPreflopHand(playerId);
 		for (auto card : hand)
@@ -455,7 +459,7 @@ std::string getHandStr(int playerId, const Deck& deck, BettingRound round)
 		result += '|';
 		return result;
 	}
-	case Flop:
+	case BettingRound::Flop:
 	{
 		const auto& hand = deck.getFlopHand(playerId);
 		for (auto card : hand)
@@ -466,7 +470,7 @@ std::string getHandStr(int playerId, const Deck& deck, BettingRound round)
 		result += '|';
 		return result;
 	}
-	case Turn:
+	case BettingRound::Turn:
 	{
 		const auto& hand = deck.getTurnHand(playerId);
 		for (auto card : hand)
@@ -477,7 +481,7 @@ std::string getHandStr(int playerId, const Deck& deck, BettingRound round)
 		result += '|';
 		return result;
 	}
-	case River:
+	case BettingRound::River:
 	{
 		const auto& hand = deck.getRiverHand(playerId);
 		for (auto card : hand)
@@ -488,15 +492,76 @@ std::string getHandStr(int playerId, const Deck& deck, BettingRound round)
 		result += '|';
 		return result;
 	}
+	default:
+	{
+		return "?";
+	}
 	}
 	return "?";
+}
+
+// TODO: horrible code, templatize?
+uint64_t getAbstractionIndex(int playerId, const Deck& deck, BettingRound round)
+{
+	uint64_t result;
+	switch (round)
+	{
+	case BettingRound::Preflop:
+	{
+		const auto& hand = deck.getPreflopHand(playerId);
+		uint8_t cards[Constants::nCardsRoundAccumulator[(uint8_t)BettingRound::Preflop]];
+		std::copy(hand.begin(), hand.end(), cards);
+		result = hand_index_last(&indexers[0], cards);
+		return result;
+	}
+	case BettingRound::Flop:
+	{
+		using FlopHistogram = Histogram<AbstractionsContext::nEHSHistogramsBins>;
+		const auto& hand = deck.getFlopHand(playerId);
+		uint8_t cards[Constants::nCardsRoundAccumulator[(uint8_t)BettingRound::Flop]];
+		std::copy(hand.begin(), hand.end(), cards);
+		uint64_t handIndex = hand_index_last(&indexers[(uint8_t)round], cards);
+		const auto& histogram = flopHistograms[handIndex];
+		result = KMeans::findNearestCentroid<FlopHistogram, KMeans::L2Distance<FlopHistogram>>(flopCentroids, histogram).first;
+		return result;
+	}
+	case BettingRound::Turn:
+	{
+		using TurnHistogram = Histogram<AbstractionsContext::nEHSHistogramsBins>;
+		const auto& hand = deck.getTurnHand(playerId);
+		uint8_t cards[Constants::nCardsRoundAccumulator[(uint8_t)BettingRound::Turn]];
+		std::copy(hand.begin(), hand.end(), cards);
+		uint64_t handIndex = hand_index_last(&indexers[(uint8_t)round], cards);
+		const auto& histogram = turnHistograms[handIndex];
+		result = KMeans::findNearestCentroid<TurnHistogram, KMeans::L2Distance<TurnHistogram>>(turnCentroids, histogram).first;
+		return result;
+	}
+	case BettingRound::River:
+	{
+		using RiverHistogram = Histogram<AbstractionsContext::nOCHSHistogramsBins>;
+		const auto& hand = deck.getRiverHand(playerId);
+		uint8_t cards[Constants::nCardsRoundAccumulator[(uint8_t)BettingRound::River]];
+		std::copy(hand.begin(), hand.end(), cards);
+		uint64_t handIndex = hand_index_last(&indexers[(uint8_t)round], cards);
+		const auto& histogram = riverHistograms[handIndex];
+		result = KMeans::findNearestCentroid<RiverHistogram, KMeans::L2Distance<RiverHistogram>>(riverCentroids, histogram).first;
+		return result;
+	}
+	default:
+	{
+		return std::numeric_limits<uint64_t>::max();
+	}
+	}
+	return std::numeric_limits<uint64_t>::max();
 }
 	
 // NOTE: a game history is encoded like so:
 //       actions/actions/actions/actions, where the '/' seperates the betting rounds.
-//       A state key is an encoding of the game history, the players' stacks relative to the current state player, 
+//       An information set key is an encoding of the playerId, the information abstraction index,
+//       the game history, the players' stacks relative to the current state player, 
 //       the pot size relative to the current state player. 
-//		 All are divided by '|', like so: actions/actions/actions|ActivePlayer1Stack/ActivePlayer2Stack|RelativePot
+//		 All are divided by '|', like so: 
+//       playerId|clusterIndex|actions/actions/actions|ActivePlayer1Stack/ActivePlayer2Stack|RelativePot
 std::string makeInfosetKey(const std::string& history,
 	int playerId,
 	const Deck& deck,
@@ -505,10 +570,9 @@ std::string makeInfosetKey(const std::string& history,
 	AbstractedSizeRatio pot,
 	FoldedPlayers foldedPlayers)
 {
-	std::string key = std::to_string(playerId) + '|' + history + '|';
-	// TODO: Map Current Hand to Information Abstraction (closest cluster centroid).
-	// key += std::to_string(KMeans::findNearestCentroid())
-	key += getHandStr(playerId, deck, bettingRound);
+	uint64_t clusterIndex = getAbstractionIndex(playerId, deck, bettingRound);
+	std::string key = std::to_string(playerId) + '|' + std::to_string(clusterIndex) + '|' + history + '|';
+
 	for (int i = 0; i < Constants::nPlayers; ++i)
 	{
 		bool isFolded = foldedPlayers.test(i);
@@ -520,9 +584,9 @@ std::string makeInfosetKey(const std::string& history,
 	return key;
 }
 
-Action sampleAction(double rand, const std::array<double, Action::Count>& strategy, Actions allowedActions)
+Action sampleAction(double rand, const std::array<float, Action::Count>& strategy, Actions allowedActions)
 {
-	double randAcc = 0.0;
+	float randAcc = 0.0;
 	for (int i = 0; i < strategy.size(); ++i)
 	{
 		if (!allowedActions.test(static_cast<Action>(i)))
@@ -596,7 +660,6 @@ void betRelativePot(GameContext& gameContext, double ratio)
 void undoBetRelativePot(GameContext& gameContext, double ratio, int previousStack, int previousBet, int previousLastBettingPlayer)
 {
 	int pot = gameContext.pot;
-	int stack = gameContext.stacks[gameContext.currentPlayerTurn];
 	int amount = previousStack >= ratio * pot ? static_cast<int>(ratio * pot) : previousStack;
 	undoBet(gameContext.currentPlayerTurn, amount, gameContext, previousBet, previousLastBettingPlayer);
 }
@@ -701,7 +764,7 @@ void undoBettingRound(const PreviousBettingRoundSnapshot& snapshot, GameContext&
 	gameContext.currentBettingRound = (BettingRound) ((uint8_t)gameContext.currentBettingRound - 1);
 }
 
-double traverseMccfr(GameContext& gameContext)
+float traverseMccfr(GameContext& gameContext)
 {
 	PreviousBettingRoundSnapshot previousRoundSnapshot;
 	// STEP 1: check terminal state
@@ -729,10 +792,9 @@ double traverseMccfr(GameContext& gameContext)
 		gameContext.isCheckAfterBBPreflopException)
 	{
 		gameContext.isCheckAfterBBPreflopException = false;
-		if (gameContext.currentBettingRound == River)
+		if (gameContext.currentBettingRound == BettingRound::River)
 		{
 			// Showdown
-			int winningPlayerId = 0;
 			int bestHandSeen = INT_MAX;
 			std::unordered_set<int> tyingPlayerIds{};
 			for (int i = 0; i < Constants::nPlayers; ++i)
@@ -742,17 +804,16 @@ double traverseMccfr(GameContext& gameContext)
 					continue;
 				}
 				auto hand = gameContext.deck.getRiverHand(i);
-				if (int handStrenght = std::apply(evaluate_7cards, hand); handStrenght <= bestHandSeen) // smaller index is stronger
+				if (int handStrength = std::apply(evaluate_7cards, hand); handStrength <= bestHandSeen) // smaller index is stronger
 				{
-					if (handStrenght == bestHandSeen)
+					if (handStrength == bestHandSeen)
 					{
 						tyingPlayerIds.insert(i);
 						continue;
 					}
 					tyingPlayerIds.clear();
 					tyingPlayerIds.insert(i);
-					bestHandSeen = handStrenght;
-					winningPlayerId = i;
+					bestHandSeen = handStrength;
 				}
 			}
 			if (tyingPlayerIds.find(gameContext.updatingPlayerId) != tyingPlayerIds.end())
@@ -773,7 +834,7 @@ double traverseMccfr(GameContext& gameContext)
 		gameContext.nBetInCurrentRound = 0;
 	}
 
-	double value = 0.0;
+	float value = 0.0;
 	// STEP 3: check if the current player is still in play.
 	if (gameContext.foldedPlayersStatus.test(gameContext.currentPlayerTurn))
 	{
@@ -800,7 +861,7 @@ double traverseMccfr(GameContext& gameContext)
 			++DebugGlobals::visited;
 			const auto& strategy = infoset.calculateStrategy();
 			Actions allowedActions = infoset.getActions();
-			std::array<double, Action::Count> actionValues{ 0 };
+			std::array<float, Action::Count> actionValues{ 0 };
 			for (int i = 0; i < Action::Count; ++i)
 			{
 				Action a = static_cast<Action>(i);
@@ -835,7 +896,7 @@ double traverseMccfr(GameContext& gameContext)
 		}
 		else
 		{
-			const auto&strategy = infoset.getStrategy();
+			const auto& strategy = infoset.getStrategy();
 			Random::rand();
 			Action a = sampleAction(Random::rand(), strategy, infoset.getActions());
 			auto previousHistory = gameContext.gameHistory;
@@ -860,20 +921,53 @@ double traverseMccfr(GameContext& gameContext)
 
 }
 
+void initAbstractions()
+{
+	using namespace std::chrono_literals;
+	using namespace PokerTypes::AbstractionsContext;
+	
+	const uint8_t preflop[] = {2};
+	const uint8_t flop[] = {2,3};
+	const uint8_t turn[] = {2,3,1};
+	const uint8_t river[] = {2,3,1,1};
+	assert(hand_indexer_init(1, preflop, &indexers[0]));
+	assert(hand_indexer_init(2, flop, &indexers[1]));
+	assert(hand_indexer_init(3, turn, &indexers[2]));
+	assert(hand_indexer_init(4, river, &indexers[3]));
+}
+
 void mccfrP(int nIterations)
 {
 	using namespace std::chrono_literals;
 	using namespace PokerTypes::AbstractionsContext;
+	
+	initAbstractions();
+	
+	const auto nFlopSize = hand_indexer_size(&indexers[(uint8_t)BettingRound::River], (uint8_t)BettingRound::Flop);
+	const auto nTurnSize = hand_indexer_size(&indexers[(uint8_t)BettingRound::River], (uint8_t)BettingRound::Turn);
+	const auto nRiverSize = hand_indexer_size(&indexers[(uint8_t)BettingRound::River], (uint8_t)BettingRound::River);
 
-	flopCentroids = Memory::getMmap<Histogram<nEHSHistogramsBins>>(flopCentroidsFilename, nFlopBuckets);
-	turnCentroids = Memory::getMmap<Histogram<nEHSHistogramsBins>>(turnCentroidsFilename, nTurnBuckets);
-	riverCentroids = Memory::getMmap<Histogram<nOCHSHistogramsBins>>(riverCentroidsFilename, nRiverBuckets);
+	std::unique_ptr<Histogram<AbstractionsContext::nEHSHistogramsBins>[], Memory::MmapDeleter<Histogram<AbstractionsContext::nEHSHistogramsBins>>> flopHistogramsMmap = Memory::getMmap<Histogram<nEHSHistogramsBins>>((std::string("../EHS/") + flopHistogramsFilename).c_str(), nFlopSize);
+	std::unique_ptr<Histogram<AbstractionsContext::nEHSHistogramsBins>[], Memory::MmapDeleter<Histogram<AbstractionsContext::nEHSHistogramsBins>>> turnHistogramsMmap = Memory::getMmap<Histogram<nEHSHistogramsBins>>((std::string("../EHS/") + turnHistogramsFilename).c_str(), nTurnSize);
+	std::unique_ptr<Histogram<AbstractionsContext::nOCHSHistogramsBins>[], Memory::MmapDeleter<Histogram<AbstractionsContext::nOCHSHistogramsBins>>> riverHistogramsMmap = Memory::getMmap<Histogram<nOCHSHistogramsBins>>((std::string("../EHS/") + riverOCHSFilename).c_str(), nRiverSize);
 
+	std::unique_ptr<Histogram<AbstractionsContext::nEHSHistogramsBins>[], Memory::MmapDeleter<Histogram<AbstractionsContext::nEHSHistogramsBins>>> flopCentroidsMmap = Memory::getMmap<Histogram<nEHSHistogramsBins>>((std::string("../EHS/") + flopCentroidsFilename).c_str(), nFlopBuckets);
+	std::unique_ptr<Histogram<AbstractionsContext::nEHSHistogramsBins>[], Memory::MmapDeleter<Histogram<AbstractionsContext::nEHSHistogramsBins>>> turnCentroidsMmap = Memory::getMmap<Histogram<nEHSHistogramsBins>>((std::string("../EHS/") + turnCentroidsFilename).c_str(), nTurnBuckets);
+	std::unique_ptr<Histogram<AbstractionsContext::nOCHSHistogramsBins>[], Memory::MmapDeleter<Histogram<AbstractionsContext::nOCHSHistogramsBins>>> riverCentroidsMmap = Memory::getMmap<Histogram<nOCHSHistogramsBins>>((std::string("../EHS/") + riverCentroidsFilename).c_str(), nRiverBuckets);
+	
+	flopHistograms = {flopHistogramsMmap.get(), flopHistogramsMmap.get() + nFlopSize};
+	turnHistograms = {turnHistogramsMmap.get(), turnHistogramsMmap.get() + nTurnSize};
+	riverHistograms = {riverHistogramsMmap.get(), riverHistogramsMmap.get() + nRiverSize};
+	
+	flopCentroids = {flopCentroidsMmap.get(), flopCentroidsMmap.get() + nFlopBuckets};
+	turnCentroids = {turnCentroidsMmap.get(), turnCentroidsMmap.get() + nTurnBuckets};
+	riverCentroids = {riverCentroidsMmap.get(), riverCentroidsMmap.get() + nRiverBuckets};
+		
 	startTime = std::chrono::steady_clock::now();
 
 	for (int t = 0; t < nIterations; ++t)
 	{
-		GameContext gameContext{ 0 };
+		GameContext gameContext{};
 		// Setup starting stacks
 		for (auto& stack : gameContext.stacks)
 		{
@@ -899,7 +993,7 @@ void mccfrP(int nIterations)
 			//}
 			//else
 			{
-				gameContext.currentBettingRound = Preflop;
+				gameContext.currentBettingRound = BettingRound::Preflop;
 				gameContext.updatingPlayerId = playerId;
 				gameContext.currentPlayerTurn = getNextPlayer(getBBPlayerIdFromButton(gameContext.currentButtonPlayerId)); // The player following the Big Blind.
 				bet(getSBPlayerIdFromButton(gameContext.currentButtonPlayerId), Constants::sb, gameContext);
@@ -921,12 +1015,10 @@ void mccfrP(int nIterations)
 		}
 	}
 }
-
+};
 
 int main()
 {
-	mccfrP(100000);
+	MCCFR::mccfrP(100000);
 	return 0;
 }
-
-};

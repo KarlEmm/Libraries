@@ -297,6 +297,15 @@ struct Histogram
 	bool isConvertedToPercent {false};
 };
 
+enum class BettingRound : uint8_t
+{
+	Preflop,
+	Flop,
+	Turn,
+	River,
+	RoundCount
+};
+
 namespace Constants
 {
 	constexpr int strategyInterval{ 10'000 };
@@ -318,7 +327,7 @@ namespace Constants
 	constexpr int nPrivateCards{ 2 };
     constexpr int nTotalPlayerCards = nPrivateCards * nPlayers;
 	constexpr int nTotalCards = nTotalPlayerCards + nCommunityCards;
-	constexpr std::array<int, 4> nCardsRoundAccumulator = {
+	constexpr std::array<int, (uint8_t)BettingRound::RoundCount> nCardsRoundAccumulator = {
 		nPrivateCards, 
 		nPrivateCards + nFlopCards, 
 		nPrivateCards + nFlopCards + nTurnCards,
@@ -333,14 +342,6 @@ namespace Constants
 	const char SUIT_TO_CHAR[] = "shdc";
 };
 
-enum class BettingRound : uint8_t
-{
-	Preflop,
-	Flop,
-	Turn,
-	River,
-	RoundCount
-};
 
 struct Card
 {
