@@ -34,13 +34,4 @@ int main()
 {
     using namespace PokerTypes;
 
-    hand_indexer_t river_indexer;
-    assert(hand_indexer_init(4, (const uint8_t[]){2,3,1,1}, &river_indexer));
-    uint64_t nCanonicalHands = hand_indexer_size(&river_indexer, 3);
-
-    // EHS::generateRiverOCHS();
-    EHS::writeRoundCentroids<TMP::nOCHSHistogramsBins, KMeans::L2Distance<Histogram<TMP::nOCHSHistogramsBins>>>(TMP::riverCentroidsFilename,
-        TMP::riverOCHSFilename, 
-        TMP::nBuckets, 3);
-
 }

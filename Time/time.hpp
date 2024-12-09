@@ -28,4 +28,11 @@ namespace Time
 			std::numeric_limits<long long>::max() : 
 			((timeElapsed * nElements) / (double)currentElement) - timeElapsed;
 	}
+	
+	template<typename TUnits = std::chrono::seconds, typename TClock = std::chrono::steady_clock>
+	requires Clock<TClock>
+	inline std::chrono::time_point<TClock> now()
+	{
+		return TClock::now();
+	}
 };

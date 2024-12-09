@@ -62,7 +62,8 @@ TEST_F(PointTest, EMDDistance)
 TEST_F(PointTest, calculateClusterCentroid)
 {
     Cluster<Point<double>> cluster {p1, p2, p5};
-    Point<double> result = calculateClusterCentroid(cluster, {});
+    std::vector<Point<double>> v {p1, p2, p5};
+    Point<double> result = calculateClusterCentroid<Point<double>, std::vector<Point<double>>>({0,1,2}, {}, v);
     EXPECT_EQ(Point({334.0, 3.0, 5.0}), result);
 }
 
