@@ -54,18 +54,6 @@ struct Flags8Bits
 	bool one() { return __builtin_popcount(flags) == 1; }
 };
 
-enum Action : uint8_t
-{
-	Fold,
-	Call,
-	Check,
-	BetQuarter,
-	BetHalf,
-	BetPot,
-	BetOver,
-	Count
-};
-
 std::string toString(Action action)
 {
 	if (action == Fold)
@@ -212,8 +200,17 @@ inline int getBBPlayerIdFromButton(int buttonPlayerId)
 
 struct GameContext
 {
+	GameContext()
+	{
+		for (auto& round : history)
+		{
+			round.fill(Action::Count);
+		}
+	}
+
 	FoldedPlayers foldedPlayersStatus{ 0 };
 	BettingRound currentBettingRound{ BettingRound::Preflop };
+	int roundActionIndex {0};
 	int nBetInCurrentRound{ 0 };
 	std::array<int, Constants::nPlayers> stacks{ 0 };
 	std::array<int, Constants::nPlayers> moneyInPot{ 0 };
@@ -227,7 +224,9 @@ struct GameContext
 
 	int currentBet{ 0 };
 	
-	std::string gameHistory{};
+	// TODO (1)
+	// std::string gameHistory{};
+	GameHistory history {};
 
 	// NOTE (keb): The BB has checked on the BB Preflop exception.
 	bool isCheckAfterBBPreflopException {false};
@@ -235,6 +234,7 @@ struct GameContext
 	bool isBBPreflopException() const 
 	{ 
 		return lastBettingPlayer == getBBPlayerIdFromButton(currentButtonPlayerId) && 
+			currentPlayerTurn == getBBPlayerIdFromButton(currentButtonPlayerId) &&
 			nBetInCurrentRound == 1 && 
 			currentBettingRound == BettingRound::Preflop; 
 	}
@@ -244,6 +244,42 @@ struct GameContext
 class Infoset
 {
 public:
+	struct Key
+	{
+		// NOTE (keb) 60 bits for at most 5 actions per betting round * 4 betting rounds * 3 bits per action
+		uint64_t history : 60;
+		uint16_t clusterIndex : 10;
+		uint8_t playerid : 4;			
+		uint8_t stacks : 6;
+		uint8_t pot : 3;
+		
+		bool operator==(const Key &other) const
+		{ return (history == other.history 
+			&& playerid == other.playerid
+			&& clusterIndex == other.clusterIndex
+			&& stacks == other.stacks
+			&& pot == other.pot);
+		}
+	};
+
+	struct KeyHasher
+	{
+		std::size_t operator()(const Key& k) const
+		{
+			using std::size_t;
+			using std::hash;
+			using std::string;
+
+			std::size_t res = 17;
+			res = res * 31 + hash<uint64_t>()( k.history);
+			res = res * 31 + hash<uint16_t>()( k.clusterIndex);
+			res = res * 31 + hash<uint8_t>()( k.playerid);
+			res = res * 31 + hash<uint8_t>()( k.stacks);
+			res = res * 31 + hash<uint8_t>()( k.pot);
+			return res;
+		}
+	};
+
 	std::array<int, Action::Count>& getRegrets() { return regrets; }
 
 	Actions getActions() { return allowedActions; }
@@ -286,8 +322,9 @@ public:
 		}
 	}
 
-	const std::array<float, Action::Count>& calculateStrategy()
+	const std::array<float, Action::Count> calculateStrategy()
 	{
+		std::array<float, Action::Count> strategy{ 0.0 };
 		int sum = 0;
 		for (int a = 0; a < Action::Count; ++a)
 		{
@@ -323,15 +360,15 @@ public:
 		}
 	}
 
-	const std::array<float, Action::Count>& getStrategy() { return strategy; }
+	// const std::array<float, Action::Count>& getStrategy() { return strategy; }
 
 private:
-	std::array<float, Action::Count> strategy{ 0.0 };
+	// std::array<float, Action::Count> strategy{ 0.0 };
 	std::array<int, Action::Count> regrets{ 0 };
 	Actions allowedActions{0};
 };
 
-inline std::unordered_map<std::string, Infoset> infosets;
+inline std::unordered_map<Infoset::Key, Infoset, Infoset::KeyHasher> infosets;
 
 enum AbstractedSizeRatio : uint8_t
 {
@@ -501,7 +538,7 @@ std::string getHandStr(int playerId, const Deck& deck, BettingRound round)
 }
 
 // TODO: horrible code, templatize?
-uint64_t getAbstractionIndex(int playerId, const Deck& deck, BettingRound round)
+uint16_t getAbstractionIndex(int playerId, const Deck& deck, BettingRound round)
 {
 	uint64_t result;
 	switch (round)
@@ -549,10 +586,24 @@ uint64_t getAbstractionIndex(int playerId, const Deck& deck, BettingRound round)
 	}
 	default:
 	{
-		return std::numeric_limits<uint64_t>::max();
+		return std::numeric_limits<uint16_t>::max();
 	}
 	}
-	return std::numeric_limits<uint64_t>::max();
+	return std::numeric_limits<uint16_t>::max();
+}
+
+uint64_t serializeHistory(const GameHistory& history)
+{
+	uint64_t result {0};
+	for (int i = 0; i < (uint8_t)BettingRound::RoundCount; ++i)
+	{
+		for (int j = 0; j < 5; ++j)
+		{
+			Action a = history[i][j];
+			result |= (uint64_t)a << ((i*5*3)+(j*3));
+		}
+	}
+	return result;
 }
 	
 // NOTE: a game history is encoded like so:
@@ -562,7 +613,7 @@ uint64_t getAbstractionIndex(int playerId, const Deck& deck, BettingRound round)
 //       the pot size relative to the current state player. 
 //		 All are divided by '|', like so: 
 //       playerId|clusterIndex|actions/actions/actions|ActivePlayer1Stack/ActivePlayer2Stack|RelativePot
-std::string makeInfosetKey(const std::string& history,
+Infoset::Key makeInfosetKey(const GameHistory& history,
 	int playerId,
 	const Deck& deck,
 	BettingRound bettingRound,
@@ -570,16 +621,20 @@ std::string makeInfosetKey(const std::string& history,
 	AbstractedSizeRatio pot,
 	FoldedPlayers foldedPlayers)
 {
-	uint64_t clusterIndex = getAbstractionIndex(playerId, deck, bettingRound);
-	std::string key = std::to_string(playerId) + '|' + std::to_string(clusterIndex) + '|' + history + '|';
+	Infoset::Key key;
+	uint16_t clusterIndex = getAbstractionIndex(playerId, deck, bettingRound);
+	key.clusterIndex = clusterIndex;
+	key.playerid = playerId;
+	key.history = serializeHistory(history);
 
+	key.stacks = 0;
 	for (int i = 0; i < Constants::nPlayers; ++i)
 	{
 		bool isFolded = foldedPlayers.test(i);
-		std::string relativeStack = isFolded ? toString(Zero) : toString(stacks[i]);
-		key += (i == 0 ? relativeStack : '/' + relativeStack);
+		// NOTE (keb): shift bits by 3 because we reserve 3 bits to represent a stack.
+		key.stacks |= (isFolded ? ((uint8_t)Zero << (i*3)) : (uint8_t(stacks[i]) << (i*3)));
 	}
-	key += '|' + toString(pot);
+	key.pot = (uint8_t)pot;
 	
 	return key;
 }
@@ -725,7 +780,7 @@ void unApplyAction(GameContext& gameContext, Action a, int previousStack, int pr
 	}
 	default:
 	{
-		std::cerr << "Applying Invalid Action" << std::endl;
+		std::cerr << "Unapplying Invalid Action" << std::endl;
 	}
 	}
 }
@@ -733,35 +788,45 @@ void unApplyAction(GameContext& gameContext, Action a, int previousStack, int pr
 struct PreviousBettingRoundSnapshot
 {
 	bool hasSnapped {false};
-	std::string history;
+	// TODO (1)
+	// std::string history;
 	int playerId;
 	int lastBettingPlayerId;
 	int currentBet;
 	int nBet;
+	BettingRound currentBettingRound;
+	int roundActionIndex;
 };
 
 void snapBettingRound(const GameContext& gameContext, PreviousBettingRoundSnapshot& snapshot)
 {
 	snapshot.hasSnapped = true;
-	snapshot.history = gameContext.gameHistory;
+	// TODO (1)
+	// snapshot.history = gameContext.gameHistory;
 	snapshot.playerId = getPreviousPlayer(gameContext.currentPlayerTurn);
 	snapshot.lastBettingPlayerId = gameContext.lastBettingPlayer;
 	snapshot.currentBet = gameContext.currentBet;
 	snapshot.nBet = gameContext.nBetInCurrentRound;
+	snapshot.currentBettingRound = gameContext.currentBettingRound;
+	snapshot.roundActionIndex = gameContext.roundActionIndex;
 }
 
 void undoBettingRound(const PreviousBettingRoundSnapshot& snapshot, GameContext& gameContext)
 {
-	if (snapshot.history.empty())
+	// TODO (1)
+	// if (snapshot.history.empty())
+	if (!snapshot.hasSnapped)
 	{
 		return;
 	}
-	gameContext.gameHistory = snapshot.history;
+	// TODO (1)
+	// gameContext.gameHistory = snapshot.history;
 	gameContext.currentPlayerTurn = snapshot.playerId;
 	gameContext.lastBettingPlayer = snapshot.lastBettingPlayerId;
 	gameContext.currentBet = snapshot.currentBet;
 	gameContext.nBetInCurrentRound = snapshot.nBet;
-	gameContext.currentBettingRound = (BettingRound) ((uint8_t)gameContext.currentBettingRound - 1);
+	gameContext.currentBettingRound = snapshot.currentBettingRound;
+	gameContext.roundActionIndex = snapshot.roundActionIndex;
 }
 
 float traverseMccfr(GameContext& gameContext)
@@ -827,11 +892,13 @@ float traverseMccfr(GameContext& gameContext)
 		}
 		snapBettingRound(gameContext, previousRoundSnapshot);
 		gameContext.currentBettingRound = (BettingRound) ((uint8_t)gameContext.currentBettingRound + 1);
-		gameContext.gameHistory += '/';
+		// TODO (1)
+		// gameContext.gameHistory += '/';
 		gameContext.currentPlayerTurn = getSBPlayerIdFromButton(gameContext.currentButtonPlayerId); // The SB starts the new round.
 		gameContext.lastBettingPlayer = gameContext.currentPlayerTurn;
 		gameContext.currentBet = 0;
 		gameContext.nBetInCurrentRound = 0;
+		gameContext.roundActionIndex = 0;
 	}
 
 	float value = 0.0;
@@ -847,7 +914,7 @@ float traverseMccfr(GameContext& gameContext)
 	{
 		auto abstractedStacks = abstractStacks(gameContext.currentPlayerTurn, gameContext.stacks);
 		auto abstractedPot = abstractPot(gameContext.pot, gameContext.stacks[gameContext.currentPlayerTurn]);
-		std::string infosetKey = makeInfosetKey(gameContext.gameHistory, gameContext.currentPlayerTurn, gameContext.deck, gameContext.currentBettingRound, abstractedStacks, abstractedPot, gameContext.foldedPlayersStatus);
+		Infoset::Key infosetKey = makeInfosetKey(gameContext.history, gameContext.currentPlayerTurn, gameContext.deck, gameContext.currentBettingRound, abstractedStacks, abstractedPot, gameContext.foldedPlayersStatus);
 		auto [infosetItr, isNewState] = infosets.try_emplace(infosetKey, Infoset());
 		if (isNewState)
 		{
@@ -855,11 +922,13 @@ float traverseMccfr(GameContext& gameContext)
 			infosetItr->second.calculateStrategy();
 		}
 
+		++gameContext.roundActionIndex;
+
 		Infoset& infoset = infosetItr->second;
 		if (gameContext.currentPlayerTurn == gameContext.updatingPlayerId)
 		{
 			++DebugGlobals::visited;
-			const auto& strategy = infoset.calculateStrategy();
+			const auto strategy = infoset.calculateStrategy();
 			Actions allowedActions = infoset.getActions();
 			std::array<float, Action::Count> actionValues{ 0 };
 			for (int i = 0; i < Action::Count; ++i)
@@ -869,8 +938,7 @@ float traverseMccfr(GameContext& gameContext)
 				{
 					continue;
 				}
-				auto previousHistory = gameContext.gameHistory;
-				gameContext.gameHistory += toString(a);
+				gameContext.history[(uint8_t)gameContext.currentBettingRound][gameContext.roundActionIndex] = a;
 				int previousStack = gameContext.stacks[gameContext.currentPlayerTurn];
 				int previousBet = gameContext.currentBet;
 				int previousLastBettingPlayer = gameContext.lastBettingPlayer;
@@ -880,7 +948,7 @@ float traverseMccfr(GameContext& gameContext)
 				gameContext.currentPlayerTurn = getPreviousPlayer(gameContext.currentPlayerTurn);
 				unApplyAction(gameContext, a, previousStack, previousBet, previousLastBettingPlayer);
 				value += strategy[a] * actionValues[a];
-				gameContext.gameHistory = std::move(previousHistory);
+				gameContext.history[(uint8_t)gameContext.currentBettingRound][gameContext.roundActionIndex] = Action::Count;
 			}
 			
 			auto& regrets= infoset.getRegrets();
@@ -893,14 +961,14 @@ float traverseMccfr(GameContext& gameContext)
 				}
 				regrets[a] += static_cast<int>(actionValues[a] - value);
 			}
+			infoset.calculateStrategy();
 		}
 		else
 		{
-			const auto& strategy = infoset.getStrategy();
+			const auto strategy = infoset.calculateStrategy();
 			Random::rand();
 			Action a = sampleAction(Random::rand(), strategy, infoset.getActions());
-			auto previousHistory = gameContext.gameHistory;
-			gameContext.gameHistory += toString(a);
+			gameContext.history[(uint8_t)gameContext.currentBettingRound][gameContext.roundActionIndex] = a;
 			int previousStack = gameContext.stacks[gameContext.currentPlayerTurn];
 			int previousBet = gameContext.currentBet;
 			int previousLastBettingPlayer = gameContext.lastBettingPlayer;
@@ -909,16 +977,13 @@ float traverseMccfr(GameContext& gameContext)
 			value = traverseMccfr(gameContext);
 			gameContext.currentPlayerTurn = getPreviousPlayer(gameContext.currentPlayerTurn);
 			unApplyAction(gameContext, a, previousStack, previousBet, previousLastBettingPlayer);
-			gameContext.gameHistory = std::move(previousHistory);
+			gameContext.history[(uint8_t)gameContext.currentBettingRound][gameContext.roundActionIndex] = Action::Count;
 		}
+		--gameContext.roundActionIndex;
 	}
 	
-	if (previousRoundSnapshot.hasSnapped)
-	{
-		undoBettingRound(previousRoundSnapshot, gameContext);
-	}
+	undoBettingRound(previousRoundSnapshot, gameContext);
 	return value;
-
 }
 
 void initAbstractions()
@@ -940,6 +1005,8 @@ void mccfrP(int nIterations)
 {
 	using namespace std::chrono_literals;
 	using namespace PokerTypes::AbstractionsContext;
+
+	infosets.reserve(1'000'000'000);
 	
 	initAbstractions();
 	
@@ -978,6 +1045,7 @@ void mccfrP(int nIterations)
 
 		gameContext.currentButtonPlayerId = 0;
 
+		const auto timeElapsed = Time::getTimeElapsed(startTime, 1min);
 		for (int playerId = 0; playerId < Constants::nPlayers; ++playerId)
 		{
 			// TODO (keb): Take a snapshot of the current strategy to make an average of the snapshots later.
@@ -986,12 +1054,12 @@ void mccfrP(int nIterations)
 			//	updateStrategy(_, playerIdx);
 			//}
 
-			//if (timeElapsed > Constants::pruningThresholdMinutes)
-			//{
-			//	const bool isPruningIteration = Random::rand() < 0.95;
-			//	isPruningIteration ? traverseMccfrPruning(_, _) : traverseMccfr(_, _);
-			//}
-			//else
+			// if (timeElapsed > Constants::pruningThresholdMinutes)
+			// {
+			// 	const bool isPruningIteration = Random::rand() < 0.95;
+			// 	isPruningIteration ? traverseMccfrPruning(_, _) : traverseMccfr(_, _);
+			// }
+			// else
 			{
 				gameContext.currentBettingRound = BettingRound::Preflop;
 				gameContext.updatingPlayerId = playerId;
@@ -1003,7 +1071,6 @@ void mccfrP(int nIterations)
 			}
 		}
 		
-		const auto timeElapsed = Time::getTimeElapsed(startTime, 1min);
 		if (timeElapsed < Constants::LCFRThresholdMinutes && 
 			(timeElapsed % Constants::discountIntervalMinutes == 0))
 		{

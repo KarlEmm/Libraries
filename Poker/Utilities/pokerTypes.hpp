@@ -297,6 +297,18 @@ struct Histogram
 	bool isConvertedToPercent {false};
 };
 
+enum Action : uint8_t
+{
+	Fold,
+	Call,
+	Check,
+	BetQuarter,
+	BetHalf,
+	BetPot,
+	BetOver,
+	Count
+};
+
 enum class BettingRound : uint8_t
 {
 	Preflop,
@@ -305,6 +317,9 @@ enum class BettingRound : uint8_t
 	River,
 	RoundCount
 };
+
+// NOTE (keb): 5 is the most actions that can happen on a heads up betting round.
+using GameHistory = std::array<std::array<Action, 5>, (uint8_t)BettingRound::RoundCount>;
 
 namespace Constants
 {
