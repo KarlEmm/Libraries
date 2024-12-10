@@ -318,8 +318,8 @@ enum class BettingRound : uint8_t
 	RoundCount
 };
 
-// NOTE (keb): 5 is the most actions that can happen on a heads up betting round.
-using GameHistory = std::array<std::array<Action, 5>, (uint8_t)BettingRound::RoundCount>;
+// NOTE (keb): 6 is the most actions that can happen on a heads up betting round.
+using GameHistory = std::array<std::array<Action, 6>, (uint8_t)BettingRound::RoundCount>;
 
 namespace Constants
 {

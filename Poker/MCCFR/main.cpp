@@ -51,7 +51,8 @@ struct Flags8Bits
 	void set(T index) { flags |= 1 << index; }
 	void unset(T index) { flags &= ~(1 << index); }
 	bool test(T index) { return flags & (1 << index); }
-	bool one() { return __builtin_popcount(flags) == 1; }
+	bool nSet() { return __builtin_popcount(flags); }
+	bool one() { return nSet() == 1; }
 };
 
 std::string toString(Action action)
@@ -239,6 +240,20 @@ struct GameContext
 			currentBettingRound == BettingRound::Preflop; 
 	}
 
+	bool allinState()
+	{
+		int nPlayersAllin {0};
+		for (int i = 0; i < Constants::nPlayers; ++i)
+		{
+			if (!foldedPlayersStatus.test(i) && stacks[i] <= 0)
+			{
+				++nPlayersAllin;
+			}
+		}
+		int nPlayersRemaining = Constants::nPlayers - foldedPlayersStatus.nSet();
+		return nPlayersAllin >= nPlayersRemaining-1;
+	}
+
 };
 
 class Infoset
@@ -246,8 +261,8 @@ class Infoset
 public:
 	struct Key
 	{
-		// NOTE (keb) 60 bits for at most 5 actions per betting round * 4 betting rounds * 3 bits per action
-		uint64_t history : 60;
+		// NOTE (keb) 72 bits for at most 6 actions per betting round * 4 betting rounds * 3 bits per action
+		__uint128_t history : 72;
 		uint16_t clusterIndex : 10;
 		uint8_t playerid : 4;			
 		uint8_t stacks : 6;
@@ -288,6 +303,10 @@ public:
 		int pot = gameContext.pot;
 		int stack = gameContext.stacks[gameContext.currentPlayerTurn];
 
+		if (stack <= 0)
+		{
+			return;
+		}
 		if (gameContext.isBBPreflopException())
 		{
 			allowedActions.set(Check);
@@ -597,10 +616,10 @@ uint64_t serializeHistory(const GameHistory& history)
 	uint64_t result {0};
 	for (int i = 0; i < (uint8_t)BettingRound::RoundCount; ++i)
 	{
-		for (int j = 0; j < 5; ++j)
+		for (int j = 0; j < 6; ++j)
 		{
 			Action a = history[i][j];
-			result |= (uint64_t)a << ((i*5*3)+(j*3));
+			result |= (uint64_t)a << ((i*6*3)+(j*3));
 		}
 	}
 	return result;
@@ -666,10 +685,10 @@ void call(GameContext& gameContext)
 	gameContext.moneyInPot[gameContext.currentPlayerTurn] += amount;
 }
 
-void undoCall(GameContext& gameContext, int previousStack)
+void undoCall(GameContext& gameContext, int previousStack, int previousBet, int previousPot)
 {
 	auto& stack = gameContext.stacks[gameContext.currentPlayerTurn];
-	int amount = gameContext.currentBet > previousStack ? previousStack : gameContext.currentBet;
+	int amount = previousBet > previousStack ? previousStack : previousBet;
 	stack += amount;
 	gameContext.pot -= amount;
 	gameContext.moneyInPot[gameContext.currentPlayerTurn] -= amount;
@@ -679,7 +698,7 @@ void check(GameContext& gameContext)
 {
 	gameContext.isCheckAfterBBPreflopException = true;
 }
-void undoCheck(GameContext& gameContext, int previousStack)
+void undoCheck(GameContext& gameContext)
 {
 	gameContext.isCheckAfterBBPreflopException = false;
 }
@@ -694,7 +713,7 @@ void bet(int playerId, int amount, GameContext& gameContext)
 	gameContext.lastBettingPlayer = playerId;
 }
 
-void undoBet(int playerId, int amount, GameContext& gameContext, int previousBet, int previousLastBettingPlayer)
+void undoBet(int playerId, int amount, GameContext& gameContext, int previousBet, int previousPot, int previousLastBettingPlayer)
 {
 	gameContext.moneyInPot[playerId] -= amount;
 	gameContext.stacks[playerId] += amount;
@@ -712,11 +731,10 @@ void betRelativePot(GameContext& gameContext, double ratio)
 	bet(gameContext.currentPlayerTurn, amount, gameContext);
 }
 
-void undoBetRelativePot(GameContext& gameContext, double ratio, int previousStack, int previousBet, int previousLastBettingPlayer)
+void undoBetRelativePot(GameContext& gameContext, double ratio, int previousStack, int previousBet, int previousPot, int previousLastBettingPlayer)
 {
-	int pot = gameContext.pot;
-	int amount = previousStack >= ratio * pot ? static_cast<int>(ratio * pot) : previousStack;
-	undoBet(gameContext.currentPlayerTurn, amount, gameContext, previousBet, previousLastBettingPlayer);
+	int amount = previousStack >= ratio * previousPot ? static_cast<int>(ratio * previousPot) : previousStack;
+	undoBet(gameContext.currentPlayerTurn, amount, gameContext, previousBet, previousPot, previousLastBettingPlayer);
 }
 
 void applyAction(GameContext& gameContext, Action a)
@@ -735,6 +753,7 @@ void applyAction(GameContext& gameContext, Action a)
 	}
 	case Check:
 	{
+		check(gameContext);
 		break;
 	}
 	case BetQuarter:
@@ -752,7 +771,7 @@ void applyAction(GameContext& gameContext, Action a)
 	}
 }
 
-void unApplyAction(GameContext& gameContext, Action a, int previousStack, int previousBet, int previousLastBettingPlayer)
+void unApplyAction(GameContext& gameContext, Action a, int previousStack, int previousBet, int previousPot, int previousLastBettingPlayer)
 {
 	switch (a)
 	{
@@ -763,11 +782,12 @@ void unApplyAction(GameContext& gameContext, Action a, int previousStack, int pr
 	}
 	case Call:
 	{
-		undoCall(gameContext, previousStack);
+		undoCall(gameContext, previousStack, previousBet, previousPot);
 		break;
 	}
 	case Check:
 	{
+		undoCheck(gameContext);
 		break;
 	}
 	case BetQuarter:
@@ -775,7 +795,7 @@ void unApplyAction(GameContext& gameContext, Action a, int previousStack, int pr
 	case BetPot:
 	case BetOver:
 	{
-		undoBetRelativePot(gameContext, toDouble(a), previousStack, previousBet, previousLastBettingPlayer);
+		undoBetRelativePot(gameContext, toDouble(a), previousStack, previousBet, previousPot, previousLastBettingPlayer);
 		break;
 	}
 	default:
@@ -803,7 +823,7 @@ void snapBettingRound(const GameContext& gameContext, PreviousBettingRoundSnapsh
 	snapshot.hasSnapped = true;
 	// TODO (1)
 	// snapshot.history = gameContext.gameHistory;
-	snapshot.playerId = getPreviousPlayer(gameContext.currentPlayerTurn);
+	snapshot.playerId = gameContext.currentPlayerTurn;
 	snapshot.lastBettingPlayerId = gameContext.lastBettingPlayer;
 	snapshot.currentBet = gameContext.currentBet;
 	snapshot.nBet = gameContext.nBetInCurrentRound;
@@ -854,7 +874,8 @@ float traverseMccfr(GameContext& gameContext)
 
 	// STEP 2: check if the current betting round is over.
 	if ((gameContext.currentPlayerTurn == gameContext.lastBettingPlayer && !(gameContext.isBBPreflopException())) ||
-		gameContext.isCheckAfterBBPreflopException)
+		gameContext.isCheckAfterBBPreflopException ||
+		gameContext.allinState())
 	{
 		gameContext.isCheckAfterBBPreflopException = false;
 		if (gameContext.currentBettingRound == BettingRound::River)
@@ -902,8 +923,12 @@ float traverseMccfr(GameContext& gameContext)
 	}
 
 	float value = 0.0;
+	if (gameContext.allinState())
+	{
+		value = traverseMccfr(gameContext);
+	}
 	// STEP 3: check if the current player is still in play.
-	if (gameContext.foldedPlayersStatus.test(gameContext.currentPlayerTurn))
+	else if (gameContext.foldedPlayersStatus.test(gameContext.currentPlayerTurn))
 	{
 		gameContext.currentPlayerTurn = getNextPlayer(gameContext.currentPlayerTurn);
 		value = traverseMccfr(gameContext);
@@ -922,7 +947,6 @@ float traverseMccfr(GameContext& gameContext)
 			infosetItr->second.calculateStrategy();
 		}
 
-		++gameContext.roundActionIndex;
 
 		Infoset& infoset = infosetItr->second;
 		if (gameContext.currentPlayerTurn == gameContext.updatingPlayerId)
@@ -939,15 +963,18 @@ float traverseMccfr(GameContext& gameContext)
 					continue;
 				}
 				gameContext.history[(uint8_t)gameContext.currentBettingRound][gameContext.roundActionIndex] = a;
+				++gameContext.roundActionIndex;
 				int previousStack = gameContext.stacks[gameContext.currentPlayerTurn];
 				int previousBet = gameContext.currentBet;
+				int previousPot = gameContext.pot;
 				int previousLastBettingPlayer = gameContext.lastBettingPlayer;
 				applyAction(gameContext, a);
 				gameContext.currentPlayerTurn = getNextPlayer(gameContext.currentPlayerTurn);
 				actionValues[a] = traverseMccfr(gameContext);
 				gameContext.currentPlayerTurn = getPreviousPlayer(gameContext.currentPlayerTurn);
-				unApplyAction(gameContext, a, previousStack, previousBet, previousLastBettingPlayer);
+				unApplyAction(gameContext, a, previousStack, previousBet, previousPot, previousLastBettingPlayer);
 				value += strategy[a] * actionValues[a];
+				--gameContext.roundActionIndex;
 				gameContext.history[(uint8_t)gameContext.currentBettingRound][gameContext.roundActionIndex] = Action::Count;
 			}
 			
@@ -969,17 +996,19 @@ float traverseMccfr(GameContext& gameContext)
 			Random::rand();
 			Action a = sampleAction(Random::rand(), strategy, infoset.getActions());
 			gameContext.history[(uint8_t)gameContext.currentBettingRound][gameContext.roundActionIndex] = a;
+			++gameContext.roundActionIndex;
 			int previousStack = gameContext.stacks[gameContext.currentPlayerTurn];
 			int previousBet = gameContext.currentBet;
+			int previousPot = gameContext.pot;
 			int previousLastBettingPlayer = gameContext.lastBettingPlayer;
 			applyAction(gameContext, a);
 			gameContext.currentPlayerTurn = getNextPlayer(gameContext.currentPlayerTurn);
 			value = traverseMccfr(gameContext);
 			gameContext.currentPlayerTurn = getPreviousPlayer(gameContext.currentPlayerTurn);
-			unApplyAction(gameContext, a, previousStack, previousBet, previousLastBettingPlayer);
+			unApplyAction(gameContext, a, previousStack, previousBet, previousPot, previousLastBettingPlayer);
+			--gameContext.roundActionIndex;
 			gameContext.history[(uint8_t)gameContext.currentBettingRound][gameContext.roundActionIndex] = Action::Count;
 		}
-		--gameContext.roundActionIndex;
 	}
 	
 	undoBettingRound(previousRoundSnapshot, gameContext);
@@ -1068,6 +1097,8 @@ void mccfrP(int nIterations)
 				bet(getBBPlayerIdFromButton(gameContext.currentButtonPlayerId), Constants::bb, gameContext);
 				gameContext.nBetInCurrentRound = 1;
 				traverseMccfr(gameContext);
+				undoBet(getBBPlayerIdFromButton(gameContext.currentButtonPlayerId), Constants::bb, gameContext, 0, 0, 0);
+				undoBet(getSBPlayerIdFromButton(gameContext.currentButtonPlayerId), Constants::sb, gameContext, 0, 0, 0);
 			}
 		}
 		
