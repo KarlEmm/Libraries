@@ -319,12 +319,34 @@ enum class BettingRound : uint8_t
 };
 
 // NOTE (keb): 6 is the most actions that can happen on a heads up betting round.
-using GameHistory = std::array<std::array<Action, 6>, (uint8_t)BettingRound::RoundCount>;
+struct GameHistory
+{
+	std::string toString()
+	{
+		std::string result;
+		for (const auto& round : m_history)
+		{
+			for (const auto& action : round)
+			{
+				result += std::to_string((int)action);
+			}
+			result += "/";
+		}
+		return result;
+	}
+	std::array<Action, 6>& operator[](size_t index) { return m_history[index]; }
+	const std::array<Action, 6>& operator[](size_t index) const { return m_history[index]; }
+
+	std::array<std::array<Action, 6>, (uint8_t)BettingRound::RoundCount> m_history;
+};
 
 namespace Constants
 {
 	constexpr int strategyInterval{ 10'000 };
-	constexpr int pruningThresholdMinutes{ 200 };
+	// TODO (keb): change back to 200 minutes
+	constexpr int pruningThresholdMinutes{ 10 };
+	// NOTE (keb): Pluribus uses -300'000'000
+	constexpr int pruningRegretThreshold { -50'000 };
 	constexpr int LCFRThresholdMinutes{ 400 };
 	constexpr int discountIntervalMinutes{ 10 };
 	
