@@ -1,3 +1,7 @@
+// TODO (keb):
+// 1. Write a Serializer to dump and read infosets from a file.
+// 2. Write an interface to query the infosets.
+
 #include <kmeans.hpp>
 #include <memory.hpp>
 #include <pokerTypes.hpp>
@@ -25,16 +29,6 @@ using namespace PokerTypes;
 
 std::array<hand_indexer_t, (uint8_t)BettingRound::RoundCount> indexers;
 
-std::span<Histogram<AbstractionsContext::nEHSHistogramsBins>> flopHistograms;
-std::span<Histogram<AbstractionsContext::nEHSHistogramsBins>> turnHistograms;
-std::span<Histogram<AbstractionsContext::nOCHSHistogramsBins>> riverHistograms;
-
-std::span<Histogram<AbstractionsContext::nEHSHistogramsBins>> flopCentroids;
-std::span<Histogram<AbstractionsContext::nEHSHistogramsBins>> turnCentroids;
-std::span<Histogram<AbstractionsContext::nOCHSHistogramsBins>> riverCentroids;
-
-inline std::chrono::time_point<std::chrono::steady_clock> startTime;
-
 template <typename T>
 concept SmallEnum = requires ()
 {
@@ -53,6 +47,7 @@ struct Flags8Bits
 	bool test(T index) { return flags & (1 << index); }
 	bool nSet() { return __builtin_popcount(flags); }
 	bool one() { return nSet() == 1; }
+	void reset() { flags = 0; }
 };
 
 std::string toString(Action action)
@@ -200,45 +195,60 @@ inline int getBBPlayerIdFromButton(int buttonPlayerId)
 	return (buttonPlayerId + 2) % Constants::nPlayers;
 }
 
+struct RoundAbstractions
+{
+	std::unique_ptr<Histogram<AbstractionsContext::nEHSHistogramsBins>[], Memory::MmapDeleter<Histogram<AbstractionsContext::nEHSHistogramsBins>>> flopHistogramsMmap; 
+	std::unique_ptr<Histogram<AbstractionsContext::nEHSHistogramsBins>[], Memory::MmapDeleter<Histogram<AbstractionsContext::nEHSHistogramsBins>>> turnHistogramsMmap;
+	std::unique_ptr<Histogram<AbstractionsContext::nOCHSHistogramsBins>[], Memory::MmapDeleter<Histogram<AbstractionsContext::nOCHSHistogramsBins>>> riverHistogramsMmap;
+
+	std::unique_ptr<Histogram<AbstractionsContext::nEHSHistogramsBins>[], Memory::MmapDeleter<Histogram<AbstractionsContext::nEHSHistogramsBins>>> flopCentroidsMmap;
+	std::unique_ptr<Histogram<AbstractionsContext::nEHSHistogramsBins>[], Memory::MmapDeleter<Histogram<AbstractionsContext::nEHSHistogramsBins>>> turnCentroidsMmap;
+	std::unique_ptr<Histogram<AbstractionsContext::nOCHSHistogramsBins>[], Memory::MmapDeleter<Histogram<AbstractionsContext::nOCHSHistogramsBins>>> riverCentroidsMmap;
+
+	std::span<Histogram<AbstractionsContext::nEHSHistogramsBins>> flopHistograms;
+	std::span<Histogram<AbstractionsContext::nEHSHistogramsBins>> turnHistograms;
+	std::span<Histogram<AbstractionsContext::nOCHSHistogramsBins>> riverHistograms;
+
+	std::span<Histogram<AbstractionsContext::nEHSHistogramsBins>> flopCentroids;
+	std::span<Histogram<AbstractionsContext::nEHSHistogramsBins>> turnCentroids;
+	std::span<Histogram<AbstractionsContext::nOCHSHistogramsBins>> riverCentroids;
+};
+RoundAbstractions roundAbstractions;
+
 struct GameContext
 {
 	GameContext()
 	{
-		for (auto& round : history.m_history)
-		{
-			round.fill(Action::Count);
-		}
+		m_deck.shuffle();
 	}
 
-	FoldedPlayers foldedPlayersStatus{ 0 };
-	BettingRound currentBettingRound{ BettingRound::Preflop };
-	int roundActionIndex {0};
-	int nBetInCurrentRound{ 0 };
-	std::array<int, Constants::nPlayers> stacks{ 0 };
-	std::array<int, Constants::nPlayers> moneyInPot{ 0 };
-	Deck deck{ };
-	int pot{ 0 };
+	FoldedPlayers m_foldedPlayersStatus{ 0 };
+	BettingRound m_currentBettingRound{ BettingRound::Preflop };
+	int m_roundActionIndex {0};
+	int m_nBetInCurrentRound{ 0 };
+	std::array<int, Constants::nPlayers> m_stacks{ 0 };
+	std::array<int, Constants::nPlayers> m_moneyInPot{ 0 };
+	Deck m_deck{ };
+	int m_pot{ 0 };
 
-	int currentButtonPlayerId{ 0 };
-	int updatingPlayerId{ 0 };
-	int currentPlayerTurn{ 0 };
-	int lastBettingPlayer{ 0 };
+	int m_currentButtonPlayerId{ 0 };
+	int m_updatingPlayerId{ 0 };
+	int m_currentPlayerTurn{ 0 };
+	int m_lastBettingPlayer{ 0 };
 
-	int currentBet{ 0 };
+	int m_currentBet{ 0 };
 	
-	// TODO (1)
-	// std::string gameHistory{};
-	GameHistory history {};
+	GameHistory m_history {};
 
 	// NOTE (keb): The BB has checked on the BB Preflop exception.
-	bool isCheckAfterBBPreflopException {false};
+	bool m_isCheckAfterBBPreflopException {false};
 	// NOTE (keb): When no bets have occured Preflop and it's the BB's turn.
 	bool isBBPreflopException() const 
 	{ 
-		return lastBettingPlayer == getBBPlayerIdFromButton(currentButtonPlayerId) && 
-			currentPlayerTurn == getBBPlayerIdFromButton(currentButtonPlayerId) &&
-			nBetInCurrentRound == 1 && 
-			currentBettingRound == BettingRound::Preflop; 
+		return m_lastBettingPlayer == getBBPlayerIdFromButton(m_currentButtonPlayerId) && 
+			m_currentPlayerTurn == getBBPlayerIdFromButton(m_currentButtonPlayerId) &&
+			m_nBetInCurrentRound == 1 && 
+			m_currentBettingRound == BettingRound::Preflop; 
 	}
 
 	bool allinState()
@@ -246,13 +256,31 @@ struct GameContext
 		int nPlayersAllin {0};
 		for (int i = 0; i < Constants::nPlayers; ++i)
 		{
-			if (!foldedPlayersStatus.test(i) && stacks[i] <= 0)
+			if (!m_foldedPlayersStatus.test(i) && m_stacks[i] <= 0)
 			{
 				++nPlayersAllin;
 			}
 		}
-		int nPlayersRemaining = Constants::nPlayers - foldedPlayersStatus.nSet();
+		int nPlayersRemaining = Constants::nPlayers - m_foldedPlayersStatus.nSet();
 		return nPlayersAllin >= nPlayersRemaining-1;
+	}
+
+	void resetForNextPlayer(int updatingPlayerId)
+	{
+		m_history.reset();
+		m_stacks.fill(500);
+		m_moneyInPot.fill(0);
+		m_foldedPlayersStatus.reset();
+		m_currentBettingRound = BettingRound::Preflop;
+		m_roundActionIndex = 0;
+		m_nBetInCurrentRound = 0;
+		m_pot = 0;
+		m_currentButtonPlayerId = 0;
+		m_updatingPlayerId = updatingPlayerId;
+		m_currentPlayerTurn = 0;
+		m_lastBettingPlayer = 0;
+		m_currentBet = 0;
+		m_isCheckAfterBBPreflopException = false;
 	}
 
 };
@@ -316,8 +344,8 @@ public:
 	Actions getActions() { return allowedActions; }
 	void setActions(const GameContext& gameContext) 
 	{
-		int pot = gameContext.pot;
-		int stack = gameContext.stacks[gameContext.currentPlayerTurn];
+		int pot = gameContext.m_pot;
+		int stack = gameContext.m_stacks[gameContext.m_currentPlayerTurn];
 
 		if (stack <= 0)
 		{
@@ -331,11 +359,12 @@ public:
 		{
 			allowedActions.set(Call);
 		}
-		if (gameContext.nBetInCurrentRound > 0)
+		if (gameContext.m_nBetInCurrentRound > 0)
 		{
 			allowedActions.set(Fold);
 		}
-		if (gameContext.nBetInCurrentRound >= 3)
+		if ((gameContext.m_currentBettingRound == BettingRound::Preflop && gameContext.m_nBetInCurrentRound >= Constants::maxNBetsPreflop) ||
+			(gameContext.m_currentBettingRound != BettingRound::Preflop && gameContext.m_nBetInCurrentRound >= Constants::maxNBetsForRound))
 		{
 			return;
 		}
@@ -594,8 +623,8 @@ uint16_t getAbstractionIndex(int playerId, const Deck& deck, BettingRound round)
 		uint8_t cards[Constants::nCardsRoundAccumulator[(uint8_t)BettingRound::Flop]];
 		std::copy(hand.begin(), hand.end(), cards);
 		uint64_t handIndex = hand_index_last(&indexers[(uint8_t)round], cards);
-		const auto& histogram = flopHistograms[handIndex];
-		result = KMeans::findNearestCentroid<FlopHistogram, KMeans::L2Distance<FlopHistogram>>(flopCentroids, histogram).first;
+		const auto& histogram = roundAbstractions.flopHistograms[handIndex];
+		result = KMeans::findNearestCentroid<FlopHistogram, KMeans::L2Distance<FlopHistogram>>(roundAbstractions.flopCentroids, histogram).first;
 		return result;
 	}
 	case BettingRound::Turn:
@@ -605,8 +634,8 @@ uint16_t getAbstractionIndex(int playerId, const Deck& deck, BettingRound round)
 		uint8_t cards[Constants::nCardsRoundAccumulator[(uint8_t)BettingRound::Turn]];
 		std::copy(hand.begin(), hand.end(), cards);
 		uint64_t handIndex = hand_index_last(&indexers[(uint8_t)round], cards);
-		const auto& histogram = turnHistograms[handIndex];
-		result = KMeans::findNearestCentroid<TurnHistogram, KMeans::L2Distance<TurnHistogram>>(turnCentroids, histogram).first;
+		const auto& histogram = roundAbstractions.turnHistograms[handIndex];
+		result = KMeans::findNearestCentroid<TurnHistogram, KMeans::L2Distance<TurnHistogram>>(roundAbstractions.turnCentroids, histogram).first;
 		return result;
 	}
 	case BettingRound::River:
@@ -616,8 +645,8 @@ uint16_t getAbstractionIndex(int playerId, const Deck& deck, BettingRound round)
 		uint8_t cards[Constants::nCardsRoundAccumulator[(uint8_t)BettingRound::River]];
 		std::copy(hand.begin(), hand.end(), cards);
 		uint64_t handIndex = hand_index_last(&indexers[(uint8_t)round], cards);
-		const auto& histogram = riverHistograms[handIndex];
-		result = KMeans::findNearestCentroid<RiverHistogram, KMeans::L2Distance<RiverHistogram>>(riverCentroids, histogram).first;
+		const auto& histogram = roundAbstractions.riverHistograms[handIndex];
+		result = KMeans::findNearestCentroid<RiverHistogram, KMeans::L2Distance<RiverHistogram>>(roundAbstractions.riverCentroids, histogram).first;
 		return result;
 	}
 	default:
@@ -696,63 +725,63 @@ Action sampleAction(double rand, const std::array<float, Action::Count>& strateg
 
 void call(GameContext& gameContext)
 {
-	auto& stack = gameContext.stacks[gameContext.currentPlayerTurn];
-	int amount = gameContext.currentBet > stack ? stack : gameContext.currentBet;
+	auto& stack = gameContext.m_stacks[gameContext.m_currentPlayerTurn];
+	int amount = gameContext.m_currentBet > stack ? stack : gameContext.m_currentBet;
 	stack -= amount;
-	gameContext.pot += amount;
-	gameContext.moneyInPot[gameContext.currentPlayerTurn] += amount;
+	gameContext.m_pot += amount;
+	gameContext.m_moneyInPot[gameContext.m_currentPlayerTurn] += amount;
 }
 
 void undoCall(GameContext& gameContext, int previousStack, int previousBet, int previousPot)
 {
-	auto& stack = gameContext.stacks[gameContext.currentPlayerTurn];
+	auto& stack = gameContext.m_stacks[gameContext.m_currentPlayerTurn];
 	int amount = previousBet > previousStack ? previousStack : previousBet;
 	stack += amount;
-	gameContext.pot -= amount;
-	gameContext.moneyInPot[gameContext.currentPlayerTurn] -= amount;
+	gameContext.m_pot -= amount;
+	gameContext.m_moneyInPot[gameContext.m_currentPlayerTurn] -= amount;
 }
 
 void check(GameContext& gameContext)
 {
-	gameContext.isCheckAfterBBPreflopException = true;
+	gameContext.m_isCheckAfterBBPreflopException = true;
 }
 void undoCheck(GameContext& gameContext)
 {
-	gameContext.isCheckAfterBBPreflopException = false;
+	gameContext.m_isCheckAfterBBPreflopException = false;
 }
 
 void bet(int playerId, int amount, GameContext& gameContext)
 {
-	gameContext.moneyInPot[playerId] += amount;
-	gameContext.stacks[playerId] -= amount;
-	gameContext.pot += amount;
-	gameContext.currentBet = amount;
-	++gameContext.nBetInCurrentRound;
-	gameContext.lastBettingPlayer = playerId;
+	gameContext.m_moneyInPot[playerId] += amount;
+	gameContext.m_stacks[playerId] -= amount;
+	gameContext.m_pot += amount;
+	gameContext.m_currentBet = amount;
+	++gameContext.m_nBetInCurrentRound;
+	gameContext.m_lastBettingPlayer = playerId;
 }
 
 void undoBet(int playerId, int amount, GameContext& gameContext, int previousBet, int previousPot, int previousLastBettingPlayer)
 {
-	gameContext.moneyInPot[playerId] -= amount;
-	gameContext.stacks[playerId] += amount;
-	gameContext.pot -= amount;
-	gameContext.currentBet = previousBet;
-	--gameContext.nBetInCurrentRound;
-	gameContext.lastBettingPlayer = previousLastBettingPlayer;
+	gameContext.m_moneyInPot[playerId] -= amount;
+	gameContext.m_stacks[playerId] += amount;
+	gameContext.m_pot -= amount;
+	gameContext.m_currentBet = previousBet;
+	--gameContext.m_nBetInCurrentRound;
+	gameContext.m_lastBettingPlayer = previousLastBettingPlayer;
 }
 
 void betRelativePot(GameContext& gameContext, double ratio)
 {
-	int pot = gameContext.pot;
-	int stack = gameContext.stacks[gameContext.currentPlayerTurn];
+	int pot = gameContext.m_pot;
+	int stack = gameContext.m_stacks[gameContext.m_currentPlayerTurn];
 	int amount = stack >= ratio * pot ? static_cast<int>(ratio * pot) : stack;
-	bet(gameContext.currentPlayerTurn, amount, gameContext);
+	bet(gameContext.m_currentPlayerTurn, amount, gameContext);
 }
 
 void undoBetRelativePot(GameContext& gameContext, double ratio, int previousStack, int previousBet, int previousPot, int previousLastBettingPlayer)
 {
 	int amount = previousStack >= ratio * previousPot ? static_cast<int>(ratio * previousPot) : previousStack;
-	undoBet(gameContext.currentPlayerTurn, amount, gameContext, previousBet, previousPot, previousLastBettingPlayer);
+	undoBet(gameContext.m_currentPlayerTurn, amount, gameContext, previousBet, previousPot, previousLastBettingPlayer);
 }
 
 void applyAction(GameContext& gameContext, Action a)
@@ -761,7 +790,7 @@ void applyAction(GameContext& gameContext, Action a)
 	{
 	case Fold:
 	{
-		gameContext.foldedPlayersStatus.set(gameContext.currentPlayerTurn);
+		gameContext.m_foldedPlayersStatus.set(gameContext.m_currentPlayerTurn);
 		break;
 	}
 	case Call:
@@ -795,7 +824,7 @@ void unApplyAction(GameContext& gameContext, Action a, int previousStack, int pr
 	{
 	case Fold:
 	{
-		gameContext.foldedPlayersStatus.unset(gameContext.currentPlayerTurn);
+		gameContext.m_foldedPlayersStatus.unset(gameContext.m_currentPlayerTurn);
 		break;
 	}
 	case Call:
@@ -826,8 +855,6 @@ void unApplyAction(GameContext& gameContext, Action a, int previousStack, int pr
 struct PreviousBettingRoundSnapshot
 {
 	bool hasSnapped {false};
-	// TODO (1)
-	// std::string history;
 	int playerId;
 	int lastBettingPlayerId;
 	int currentBet;
@@ -839,32 +866,26 @@ struct PreviousBettingRoundSnapshot
 void snapBettingRound(const GameContext& gameContext, PreviousBettingRoundSnapshot& snapshot)
 {
 	snapshot.hasSnapped = true;
-	// TODO (1)
-	// snapshot.history = gameContext.gameHistory;
-	snapshot.playerId = gameContext.currentPlayerTurn;
-	snapshot.lastBettingPlayerId = gameContext.lastBettingPlayer;
-	snapshot.currentBet = gameContext.currentBet;
-	snapshot.nBet = gameContext.nBetInCurrentRound;
-	snapshot.currentBettingRound = gameContext.currentBettingRound;
-	snapshot.roundActionIndex = gameContext.roundActionIndex;
+	snapshot.playerId = gameContext.m_currentPlayerTurn;
+	snapshot.lastBettingPlayerId = gameContext.m_lastBettingPlayer;
+	snapshot.currentBet = gameContext.m_currentBet;
+	snapshot.nBet = gameContext.m_nBetInCurrentRound;
+	snapshot.currentBettingRound = gameContext.m_currentBettingRound;
+	snapshot.roundActionIndex = gameContext.m_roundActionIndex;
 }
 
 void undoBettingRound(const PreviousBettingRoundSnapshot& snapshot, GameContext& gameContext)
 {
-	// TODO (1)
-	// if (snapshot.history.empty())
 	if (!snapshot.hasSnapped)
 	{
 		return;
 	}
-	// TODO (1)
-	// gameContext.gameHistory = snapshot.history;
-	gameContext.currentPlayerTurn = snapshot.playerId;
-	gameContext.lastBettingPlayer = snapshot.lastBettingPlayerId;
-	gameContext.currentBet = snapshot.currentBet;
-	gameContext.nBetInCurrentRound = snapshot.nBet;
-	gameContext.currentBettingRound = snapshot.currentBettingRound;
-	gameContext.roundActionIndex = snapshot.roundActionIndex;
+	gameContext.m_currentPlayerTurn = snapshot.playerId;
+	gameContext.m_lastBettingPlayer = snapshot.lastBettingPlayerId;
+	gameContext.m_currentBet = snapshot.currentBet;
+	gameContext.m_nBetInCurrentRound = snapshot.nBet;
+	gameContext.m_currentBettingRound = snapshot.currentBettingRound;
+	gameContext.m_roundActionIndex = snapshot.roundActionIndex;
 }
 
 float traverseMccfr(GameContext& gameContext, const bool isPruning = false)
@@ -872,42 +893,42 @@ float traverseMccfr(GameContext& gameContext, const bool isPruning = false)
 	PreviousBettingRoundSnapshot previousRoundSnapshot;
 	// STEP 1: check terminal state
 	// Terminal State, Updating Player is not playing
-	if (gameContext.foldedPlayersStatus.test(gameContext.updatingPlayerId))
+	if (gameContext.m_foldedPlayersStatus.test(gameContext.m_updatingPlayerId))
 	{
-		return -gameContext.moneyInPot[gameContext.updatingPlayerId];
+		return -gameContext.m_moneyInPot[gameContext.m_updatingPlayerId];
 	}
 	// Terminal Last One Standing 
-	if (gameContext.foldedPlayersStatus.one())
+	if (gameContext.m_foldedPlayersStatus.one())
 	{
-		if (!gameContext.foldedPlayersStatus.test(gameContext.updatingPlayerId))
+		if (!gameContext.m_foldedPlayersStatus.test(gameContext.m_updatingPlayerId))
 		{
-			return gameContext.pot;
+			return gameContext.m_pot;
 		}
 		// TODO: this branch might be useless, as when the updating player folds, the search ends.
 		else
 		{
-			return -gameContext.moneyInPot[gameContext.updatingPlayerId];
+			return -gameContext.m_moneyInPot[gameContext.m_updatingPlayerId];
 		}
 	}
 
 	// STEP 2: check if the current betting round is over.
-	if ((gameContext.currentPlayerTurn == gameContext.lastBettingPlayer && !(gameContext.isBBPreflopException())) ||
-		gameContext.isCheckAfterBBPreflopException ||
+	if ((gameContext.m_currentPlayerTurn == gameContext.m_lastBettingPlayer && !(gameContext.isBBPreflopException())) ||
+		gameContext.m_isCheckAfterBBPreflopException ||
 		gameContext.allinState())
 	{
-		gameContext.isCheckAfterBBPreflopException = false;
-		if (gameContext.currentBettingRound == BettingRound::River)
+		gameContext.m_isCheckAfterBBPreflopException = false;
+		if (gameContext.m_currentBettingRound == BettingRound::River)
 		{
 			// Showdown
 			int bestHandSeen = INT_MAX;
 			std::unordered_set<int> tyingPlayerIds{};
 			for (int i = 0; i < Constants::nPlayers; ++i)
 			{
-				if (gameContext.foldedPlayersStatus.test(i))
+				if (gameContext.m_foldedPlayersStatus.test(i))
 				{
 					continue;
 				}
-				auto hand = gameContext.deck.getRiverHand(i);
+				auto hand = gameContext.m_deck.getRiverHand(i);
 				if (int handStrength = std::apply(evaluate_7cards, hand); handStrength <= bestHandSeen) // smaller index is stronger
 				{
 					if (handStrength == bestHandSeen)
@@ -920,24 +941,22 @@ float traverseMccfr(GameContext& gameContext, const bool isPruning = false)
 					bestHandSeen = handStrength;
 				}
 			}
-			if (tyingPlayerIds.find(gameContext.updatingPlayerId) != tyingPlayerIds.end())
+			if (tyingPlayerIds.find(gameContext.m_updatingPlayerId) != tyingPlayerIds.end())
 			{
-				return static_cast<int>(gameContext.pot / tyingPlayerIds.size()); // Integer Division, inaccuracy negligible 
+				return static_cast<int>(gameContext.m_pot / tyingPlayerIds.size()); // Integer Division, inaccuracy negligible 
 			}
 			else
 			{
-				return -gameContext.moneyInPot[gameContext.updatingPlayerId];
+				return -gameContext.m_moneyInPot[gameContext.m_updatingPlayerId];
 			}
 		}
 		snapBettingRound(gameContext, previousRoundSnapshot);
-		gameContext.currentBettingRound = (BettingRound) ((uint8_t)gameContext.currentBettingRound + 1);
-		// TODO (1)
-		// gameContext.gameHistory += '/';
-		gameContext.currentPlayerTurn = getSBPlayerIdFromButton(gameContext.currentButtonPlayerId); // The SB starts the new round.
-		gameContext.lastBettingPlayer = gameContext.currentPlayerTurn;
-		gameContext.currentBet = 0;
-		gameContext.nBetInCurrentRound = 0;
-		gameContext.roundActionIndex = 0;
+		gameContext.m_currentBettingRound = (BettingRound) ((uint8_t)gameContext.m_currentBettingRound + 1);
+		gameContext.m_currentPlayerTurn = getSBPlayerIdFromButton(gameContext.m_currentButtonPlayerId); // The SB starts the new round.
+		gameContext.m_lastBettingPlayer = gameContext.m_currentPlayerTurn;
+		gameContext.m_currentBet = 0;
+		gameContext.m_nBetInCurrentRound = 0;
+		gameContext.m_roundActionIndex = 0;
 	}
 
 	float value = 0.0;
@@ -946,18 +965,18 @@ float traverseMccfr(GameContext& gameContext, const bool isPruning = false)
 		value = traverseMccfr(gameContext, isPruning);
 	}
 	// STEP 3: check if the current player is still in play.
-	else if (gameContext.foldedPlayersStatus.test(gameContext.currentPlayerTurn))
+	else if (gameContext.m_foldedPlayersStatus.test(gameContext.m_currentPlayerTurn))
 	{
-		gameContext.currentPlayerTurn = getNextPlayer(gameContext.currentPlayerTurn);
+		gameContext.m_currentPlayerTurn = getNextPlayer(gameContext.m_currentPlayerTurn);
 		value = traverseMccfr(gameContext, isPruning);
-		gameContext.currentPlayerTurn = getPreviousPlayer(gameContext.currentPlayerTurn);
+		gameContext.m_currentPlayerTurn = getPreviousPlayer(gameContext.m_currentPlayerTurn);
 	}
 	// STEP 4: apply current player's actions.
 	else
 	{
-		auto abstractedStacks = abstractStacks(gameContext.currentPlayerTurn, gameContext.stacks);
-		auto abstractedPot = abstractPot(gameContext.pot, gameContext.stacks[gameContext.currentPlayerTurn]);
-		Infoset::Key infosetKey = makeInfosetKey(gameContext.history, gameContext.currentPlayerTurn, gameContext.deck, gameContext.currentBettingRound, abstractedStacks, abstractedPot, gameContext.foldedPlayersStatus);
+		auto abstractedStacks = abstractStacks(gameContext.m_currentPlayerTurn, gameContext.m_stacks);
+		auto abstractedPot = abstractPot(gameContext.m_pot, gameContext.m_stacks[gameContext.m_currentPlayerTurn]);
+		Infoset::Key infosetKey = makeInfosetKey(gameContext.m_history, gameContext.m_currentPlayerTurn, gameContext.m_deck, gameContext.m_currentBettingRound, abstractedStacks, abstractedPot, gameContext.m_foldedPlayersStatus);
 		auto [infosetItr, isNewState] = infosets.try_emplace(infosetKey, Infoset());
 		if (isNewState)
 		{
@@ -967,7 +986,7 @@ float traverseMccfr(GameContext& gameContext, const bool isPruning = false)
 
 
 		Infoset& infoset = infosetItr->second;
-		if (gameContext.currentPlayerTurn == gameContext.updatingPlayerId)
+		if (gameContext.m_currentPlayerTurn == gameContext.m_updatingPlayerId)
 		{
 			++DebugGlobals::visited;
 			const auto strategy = infoset.calculateStrategy();
@@ -985,20 +1004,20 @@ float traverseMccfr(GameContext& gameContext, const bool isPruning = false)
 					allowedActions.unset(a);
 					continue;
 				}
-				gameContext.history[(uint8_t)gameContext.currentBettingRound][gameContext.roundActionIndex] = a;
-				++gameContext.roundActionIndex;
-				int previousStack = gameContext.stacks[gameContext.currentPlayerTurn];
-				int previousBet = gameContext.currentBet;
-				int previousPot = gameContext.pot;
-				int previousLastBettingPlayer = gameContext.lastBettingPlayer;
+				gameContext.m_history[(uint8_t)gameContext.m_currentBettingRound][gameContext.m_roundActionIndex] = a;
+				++gameContext.m_roundActionIndex;
+				int previousStack = gameContext.m_stacks[gameContext.m_currentPlayerTurn];
+				int previousBet = gameContext.m_currentBet;
+				int previousPot = gameContext.m_pot;
+				int previousLastBettingPlayer = gameContext.m_lastBettingPlayer;
 				applyAction(gameContext, a);
-				gameContext.currentPlayerTurn = getNextPlayer(gameContext.currentPlayerTurn);
+				gameContext.m_currentPlayerTurn = getNextPlayer(gameContext.m_currentPlayerTurn);
 				actionValues[a] = traverseMccfr(gameContext, isPruning);
-				gameContext.currentPlayerTurn = getPreviousPlayer(gameContext.currentPlayerTurn);
+				gameContext.m_currentPlayerTurn = getPreviousPlayer(gameContext.m_currentPlayerTurn);
 				unApplyAction(gameContext, a, previousStack, previousBet, previousPot, previousLastBettingPlayer);
 				value += strategy[a] * actionValues[a];
-				--gameContext.roundActionIndex;
-				gameContext.history[(uint8_t)gameContext.currentBettingRound][gameContext.roundActionIndex] = Action::Count;
+				--gameContext.m_roundActionIndex;
+				gameContext.m_history[(uint8_t)gameContext.m_currentBettingRound][gameContext.m_roundActionIndex] = Action::Count;
 			}
 
 			infoset.updateRegrets(actionValues, allowedActions, value);	
@@ -1009,19 +1028,19 @@ float traverseMccfr(GameContext& gameContext, const bool isPruning = false)
 			const auto strategy = infoset.calculateStrategy();
 			Random::rand();
 			Action a = sampleAction(Random::rand(), strategy, infoset.getActions());
-			gameContext.history[(uint8_t)gameContext.currentBettingRound][gameContext.roundActionIndex] = a;
-			++gameContext.roundActionIndex;
-			int previousStack = gameContext.stacks[gameContext.currentPlayerTurn];
-			int previousBet = gameContext.currentBet;
-			int previousPot = gameContext.pot;
-			int previousLastBettingPlayer = gameContext.lastBettingPlayer;
+			gameContext.m_history[(uint8_t)gameContext.m_currentBettingRound][gameContext.m_roundActionIndex] = a;
+			++gameContext.m_roundActionIndex;
+			int previousStack = gameContext.m_stacks[gameContext.m_currentPlayerTurn];
+			int previousBet = gameContext.m_currentBet;
+			int previousPot = gameContext.m_pot;
+			int previousLastBettingPlayer = gameContext.m_lastBettingPlayer;
 			applyAction(gameContext, a);
-			gameContext.currentPlayerTurn = getNextPlayer(gameContext.currentPlayerTurn);
+			gameContext.m_currentPlayerTurn = getNextPlayer(gameContext.m_currentPlayerTurn);
 			value = traverseMccfr(gameContext, isPruning);
-			gameContext.currentPlayerTurn = getPreviousPlayer(gameContext.currentPlayerTurn);
+			gameContext.m_currentPlayerTurn = getPreviousPlayer(gameContext.m_currentPlayerTurn);
 			unApplyAction(gameContext, a, previousStack, previousBet, previousPot, previousLastBettingPlayer);
-			--gameContext.roundActionIndex;
-			gameContext.history[(uint8_t)gameContext.currentBettingRound][gameContext.roundActionIndex] = Action::Count;
+			--gameContext.m_roundActionIndex;
+			gameContext.m_history[(uint8_t)gameContext.m_currentBettingRound][gameContext.m_roundActionIndex] = Action::Count;
 		}
 	}
 	
@@ -1042,75 +1061,71 @@ void initAbstractions()
 	assert(hand_indexer_init(2, flop, &indexers[1]));
 	assert(hand_indexer_init(3, turn, &indexers[2]));
 	assert(hand_indexer_init(4, river, &indexers[3]));
+	
+	const auto nFlopSize = hand_indexer_size(&indexers[(uint8_t)BettingRound::River], (uint8_t)BettingRound::Flop);
+	const auto nTurnSize = hand_indexer_size(&indexers[(uint8_t)BettingRound::River], (uint8_t)BettingRound::Turn);
+	const auto nRiverSize = hand_indexer_size(&indexers[(uint8_t)BettingRound::River], (uint8_t)BettingRound::River);
+	
+	roundAbstractions.flopHistogramsMmap = Memory::getMmap<Histogram<nEHSHistogramsBins>>((std::string("../EHS/") + flopHistogramsFilename).c_str(), nFlopSize);
+	roundAbstractions.turnHistogramsMmap = Memory::getMmap<Histogram<nEHSHistogramsBins>>((std::string("../EHS/") + turnHistogramsFilename).c_str(), nTurnSize);
+	roundAbstractions.riverHistogramsMmap = Memory::getMmap<Histogram<nOCHSHistogramsBins>>((std::string("../EHS/") + riverOCHSFilename).c_str(), nRiverSize);
+	
+	roundAbstractions.flopCentroidsMmap = Memory::getMmap<Histogram<nEHSHistogramsBins>>((std::string("../EHS/") + flopCentroidsFilename).c_str(), nFlopBuckets);
+	roundAbstractions.turnCentroidsMmap = Memory::getMmap<Histogram<nEHSHistogramsBins>>((std::string("../EHS/") + turnCentroidsFilename).c_str(), nTurnBuckets);
+	roundAbstractions.riverCentroidsMmap = Memory::getMmap<Histogram<nOCHSHistogramsBins>>((std::string("../EHS/") + riverCentroidsFilename).c_str(), nRiverBuckets);
+	
+	roundAbstractions.flopHistograms = {roundAbstractions.flopHistogramsMmap.get(), roundAbstractions.flopHistogramsMmap.get() + nFlopSize};
+	roundAbstractions.turnHistograms = {roundAbstractions.turnHistogramsMmap.get(), roundAbstractions.turnHistogramsMmap.get() + nTurnSize};
+	roundAbstractions.riverHistograms = {roundAbstractions.riverHistogramsMmap.get(), roundAbstractions.riverHistogramsMmap.get() + nRiverSize};
+	
+	roundAbstractions.flopCentroids = {roundAbstractions.flopCentroidsMmap.get(), roundAbstractions.flopCentroidsMmap.get() + nFlopBuckets};
+	roundAbstractions.turnCentroids = {roundAbstractions.turnCentroidsMmap.get(), roundAbstractions.turnCentroidsMmap.get() + nTurnBuckets};
+	roundAbstractions.riverCentroids = {roundAbstractions.riverCentroidsMmap.get(), roundAbstractions.riverCentroidsMmap.get() + nRiverBuckets};
+}
+			
+void placeBlinds(GameContext& gameContext)
+{
+	bet(getSBPlayerIdFromButton(gameContext.m_currentButtonPlayerId), Constants::sb, gameContext);
+	bet(getBBPlayerIdFromButton(gameContext.m_currentButtonPlayerId), Constants::bb, gameContext);
+	gameContext.m_nBetInCurrentRound = 1;
+}
+
+void updateEachPlayer(GameContext& gameContext, bool isPruningIteration)
+{
+	for (int playerId = 0; playerId < Constants::nPlayers; ++playerId)
+	{
+		gameContext.resetForNextPlayer(playerId);
+		// TODO (keb): Take a snapshot of the current strategy to make an average of the snapshots later.
+		//if (t % Constants::strategyInterval == 0)
+		//{
+		//	updateStrategy(_, playerIdx);
+		//}
+		gameContext.m_updatingPlayerId = playerId;
+		gameContext.m_currentPlayerTurn = getNextPlayer(getBBPlayerIdFromButton(gameContext.m_currentButtonPlayerId));
+		placeBlinds(gameContext);
+		traverseMccfr(gameContext, isPruningIteration);
+	}
 }
 
 void mccfrP(int nIterations)
 {
 	using namespace std::chrono_literals;
-	using namespace PokerTypes::AbstractionsContext;
-
-	infosets.reserve(1'000'000'000);
 	
 	initAbstractions();
-	
-	const auto nFlopSize = hand_indexer_size(&indexers[(uint8_t)BettingRound::River], (uint8_t)BettingRound::Flop);
-	const auto nTurnSize = hand_indexer_size(&indexers[(uint8_t)BettingRound::River], (uint8_t)BettingRound::Turn);
-	const auto nRiverSize = hand_indexer_size(&indexers[(uint8_t)BettingRound::River], (uint8_t)BettingRound::River);
-
-	std::unique_ptr<Histogram<AbstractionsContext::nEHSHistogramsBins>[], Memory::MmapDeleter<Histogram<AbstractionsContext::nEHSHistogramsBins>>> flopHistogramsMmap = Memory::getMmap<Histogram<nEHSHistogramsBins>>((std::string("../EHS/") + flopHistogramsFilename).c_str(), nFlopSize);
-	std::unique_ptr<Histogram<AbstractionsContext::nEHSHistogramsBins>[], Memory::MmapDeleter<Histogram<AbstractionsContext::nEHSHistogramsBins>>> turnHistogramsMmap = Memory::getMmap<Histogram<nEHSHistogramsBins>>((std::string("../EHS/") + turnHistogramsFilename).c_str(), nTurnSize);
-	std::unique_ptr<Histogram<AbstractionsContext::nOCHSHistogramsBins>[], Memory::MmapDeleter<Histogram<AbstractionsContext::nOCHSHistogramsBins>>> riverHistogramsMmap = Memory::getMmap<Histogram<nOCHSHistogramsBins>>((std::string("../EHS/") + riverOCHSFilename).c_str(), nRiverSize);
-
-	std::unique_ptr<Histogram<AbstractionsContext::nEHSHistogramsBins>[], Memory::MmapDeleter<Histogram<AbstractionsContext::nEHSHistogramsBins>>> flopCentroidsMmap = Memory::getMmap<Histogram<nEHSHistogramsBins>>((std::string("../EHS/") + flopCentroidsFilename).c_str(), nFlopBuckets);
-	std::unique_ptr<Histogram<AbstractionsContext::nEHSHistogramsBins>[], Memory::MmapDeleter<Histogram<AbstractionsContext::nEHSHistogramsBins>>> turnCentroidsMmap = Memory::getMmap<Histogram<nEHSHistogramsBins>>((std::string("../EHS/") + turnCentroidsFilename).c_str(), nTurnBuckets);
-	std::unique_ptr<Histogram<AbstractionsContext::nOCHSHistogramsBins>[], Memory::MmapDeleter<Histogram<AbstractionsContext::nOCHSHistogramsBins>>> riverCentroidsMmap = Memory::getMmap<Histogram<nOCHSHistogramsBins>>((std::string("../EHS/") + riverCentroidsFilename).c_str(), nRiverBuckets);
-	
-	flopHistograms = {flopHistogramsMmap.get(), flopHistogramsMmap.get() + nFlopSize};
-	turnHistograms = {turnHistogramsMmap.get(), turnHistogramsMmap.get() + nTurnSize};
-	riverHistograms = {riverHistogramsMmap.get(), riverHistogramsMmap.get() + nRiverSize};
-	
-	flopCentroids = {flopCentroidsMmap.get(), flopCentroidsMmap.get() + nFlopBuckets};
-	turnCentroids = {turnCentroidsMmap.get(), turnCentroidsMmap.get() + nTurnBuckets};
-	riverCentroids = {riverCentroidsMmap.get(), riverCentroidsMmap.get() + nRiverBuckets};
 		
-	startTime = std::chrono::steady_clock::now();
+	auto startTime = std::chrono::steady_clock::now();
 
 	for (int t = 0; t < nIterations; ++t)
 	{
 		GameContext gameContext{};
-		// Setup starting stacks
-		for (auto& stack : gameContext.stacks)
-		{
-			stack = Random::get(Constants::minStartingStackSize, Constants::maxStartingStackSize);
-		}
 
-		gameContext.deck.shuffle();
-
-		gameContext.currentButtonPlayerId = 0;
-
+		bool isPruningIteration = false;
 		const auto timeElapsed = Time::getTimeElapsed(startTime, 1min);
-		for (int playerId = 0; playerId < Constants::nPlayers; ++playerId)
+		if (timeElapsed > Constants::pruningThresholdMinutes)
 		{
-			// TODO (keb): Take a snapshot of the current strategy to make an average of the snapshots later.
-			//if (t % Constants::strategyInterval == 0)
-			//{
-			//	updateStrategy(_, playerIdx);
-			//}
-			bool isPruningIteration = false;
-			if (timeElapsed > Constants::pruningThresholdMinutes)
-			{
-				isPruningIteration = Random::rand() < 0.95;
-			}
-			gameContext.currentBettingRound = BettingRound::Preflop;
-			gameContext.updatingPlayerId = playerId;
-			gameContext.currentPlayerTurn = getNextPlayer(getBBPlayerIdFromButton(gameContext.currentButtonPlayerId)); 
-			bet(getSBPlayerIdFromButton(gameContext.currentButtonPlayerId), Constants::sb, gameContext);
-			bet(getBBPlayerIdFromButton(gameContext.currentButtonPlayerId), Constants::bb, gameContext);
-			gameContext.nBetInCurrentRound = 1;
-			traverseMccfr(gameContext, isPruningIteration);
-			undoBet(getBBPlayerIdFromButton(gameContext.currentButtonPlayerId), Constants::bb, gameContext, 0, 0, 0);
-			undoBet(getSBPlayerIdFromButton(gameContext.currentButtonPlayerId), Constants::sb, gameContext, 0, 0, 0);
+			isPruningIteration = Random::rand() < 0.95;
 		}
+		updateEachPlayer(gameContext, isPruningIteration);
 		
 		if (timeElapsed < Constants::LCFRThresholdMinutes && 
 			(timeElapsed % Constants::discountIntervalMinutes == 0))

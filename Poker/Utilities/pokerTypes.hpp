@@ -321,6 +321,19 @@ enum class BettingRound : uint8_t
 // NOTE (keb): 6 is the most actions that can happen on a heads up betting round.
 struct GameHistory
 {
+	GameHistory()
+	{
+		reset();
+	}
+
+	void reset()
+	{
+		for (auto& round : m_history)
+		{
+			round.fill(Action::Count);
+		}
+	}
+
 	std::string toString()
 	{
 		std::string result;
@@ -344,7 +357,7 @@ namespace Constants
 {
 	constexpr int strategyInterval{ 10'000 };
 	// TODO (keb): change back to 200 minutes
-	constexpr int pruningThresholdMinutes{ 10 };
+	constexpr int pruningThresholdMinutes{ 100 };
 	// NOTE (keb): Pluribus uses -300'000'000
 	constexpr int pruningRegretThreshold { -50'000 };
 	constexpr int LCFRThresholdMinutes{ 400 };
@@ -377,6 +390,9 @@ namespace Constants
 	constexpr int nDeckCards{ nRanks * nSuits };
 	const char RANK_TO_CHAR[] = "23456789TJQKA";
 	const char SUIT_TO_CHAR[] = "shdc";
+
+	constexpr int maxNBetsPreflop = 4;
+	constexpr int maxNBetsForRound = 3;
 };
 
 
