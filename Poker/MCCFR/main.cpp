@@ -19,6 +19,7 @@ extern "C"
 #include <chrono>
 #include <iostream> // For debugging
 #include <numeric>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -58,8 +59,6 @@ std::string toString(Action action)
 		return "C";
 	if (action == Check)
 		return "CH";
-	if (action == BetQuarter)
-		return "BQ";
 	if (action == BetHalf)
 		return "BH";
 	if (action == BetPot)
@@ -290,11 +289,12 @@ class Infoset
 public:
 	struct Key
 	{
-		// NOTE (keb) 72 bits for at most 6 actions per betting round * 4 betting rounds * 3 bits per action
-		__uint128_t history : 72;
-		uint16_t clusterIndex : 10;
-		uint8_t playerid : 4;			
-		uint8_t stacks : 6;
+		// NOTE (keb): 60 bits for at most 5 actions per betting round * 4 betting rounds * 3 bits per action
+		// TODO (keb): not flexible, can't add more players
+		uint64_t history : 60;
+		uint16_t clusterIndex : 8;
+		uint8_t playerid : 2;			
+		uint8_t stacks : 2*3;
 		uint8_t pot : 3;
 		
 		bool operator==(const Key &other) const
@@ -369,10 +369,6 @@ public:
 			return;
 		}
 		if (stack > 0)
-		{
-			allowedActions.set(BetQuarter);
-		}
-		if (stack > 0.25*pot)
 		{
 			allowedActions.set(BetHalf);
 		}
@@ -463,8 +459,6 @@ double toDouble(Action actionSize)
 {
 	switch (actionSize)
 	{
-	case BetQuarter:
-		return 0.25;
 	case BetHalf:
 		return 0.5;
 	case BetPot:
@@ -605,7 +599,7 @@ std::string getHandStr(int playerId, const Deck& deck, BettingRound round)
 // TODO: horrible code, templatize?
 uint16_t getAbstractionIndex(int playerId, const Deck& deck, BettingRound round)
 {
-	uint64_t result;
+	uint16_t result;
 	switch (round)
 	{
 	case BettingRound::Preflop:
@@ -613,7 +607,7 @@ uint16_t getAbstractionIndex(int playerId, const Deck& deck, BettingRound round)
 		const auto& hand = deck.getPreflopHand(playerId);
 		uint8_t cards[Constants::nCardsRoundAccumulator[(uint8_t)BettingRound::Preflop]];
 		std::copy(hand.begin(), hand.end(), cards);
-		result = hand_index_last(&indexers[0], cards);
+		result = hand_index_last(&indexers[(uint8_t)round], cards);
 		return result;
 	}
 	case BettingRound::Flop:
@@ -662,10 +656,10 @@ uint64_t serializeHistory(const GameHistory& history)
 	uint64_t result {0};
 	for (int i = 0; i < (uint8_t)BettingRound::RoundCount; ++i)
 	{
-		for (int j = 0; j < 6; ++j)
+		for (int j = 0; j < Constants::maxNActionsPerRound; ++j)
 		{
 			Action a = history[i][j];
-			result |= (uint64_t)a << ((i*6*3)+(j*3));
+			result |= (uint64_t)a << ((i*Constants::maxNActionsPerRound*3)+(j*3));
 		}
 	}
 	return result;
@@ -686,13 +680,15 @@ Infoset::Key makeInfosetKey(const GameHistory& history,
 	AbstractedSizeRatio pot,
 	FoldedPlayers foldedPlayers)
 {
+	// TODO (keb): review this
 	Infoset::Key key;
 	uint16_t clusterIndex = getAbstractionIndex(playerId, deck, bettingRound);
+	assert(clusterIndex < AbstractionsContext::maxNBuckets && "Invalid Information Abstraction Cluster Index");
 	key.clusterIndex = clusterIndex;
 	key.playerid = playerId;
 	key.history = serializeHistory(history);
 
-	// TODO (keb): uncomment to consider stacks and pot relative to current player's stack.
+	// NOTE (keb): Uncomment if you want to consider the relative stack and pot sizes.
 	// key.stacks = 0;
 	// for (int i = 0; i < Constants::nPlayers; ++i)
 	// {
@@ -803,7 +799,6 @@ void applyAction(GameContext& gameContext, Action a)
 		check(gameContext);
 		break;
 	}
-	case BetQuarter:
 	case BetHalf:
 	case BetPot:
 	case BetOver:
@@ -837,7 +832,6 @@ void unApplyAction(GameContext& gameContext, Action a, int previousStack, int pr
 		undoCheck(gameContext);
 		break;
 	}
-	case BetQuarter:
 	case BetHalf:
 	case BetPot:
 	case BetOver:
@@ -888,69 +882,94 @@ void undoBettingRound(const PreviousBettingRoundSnapshot& snapshot, GameContext&
 	gameContext.m_roundActionIndex = snapshot.roundActionIndex;
 }
 
-float traverseMccfr(GameContext& gameContext, const bool isPruning = false)
+std::optional<float> isTerminalState(GameContext& gameContext)
 {
-	PreviousBettingRoundSnapshot previousRoundSnapshot;
-	// STEP 1: check terminal state
-	// Terminal State, Updating Player is not playing
 	if (gameContext.m_foldedPlayersStatus.test(gameContext.m_updatingPlayerId))
 	{
 		return -gameContext.m_moneyInPot[gameContext.m_updatingPlayerId];
 	}
-	// Terminal Last One Standing 
-	if (gameContext.m_foldedPlayersStatus.one())
+	
+	if (!gameContext.m_foldedPlayersStatus.test(gameContext.m_updatingPlayerId) &&
+		gameContext.m_foldedPlayersStatus.one())
 	{
-		if (!gameContext.m_foldedPlayersStatus.test(gameContext.m_updatingPlayerId))
+		return gameContext.m_pot;
+	}
+
+	// River Showdown
+	if ((gameContext.m_currentPlayerTurn == gameContext.m_lastBettingPlayer && !(gameContext.isBBPreflopException())) && 
+		gameContext.m_currentBettingRound == BettingRound::River)
+	{
+		int bestHandSeen = INT_MAX;
+		std::unordered_set<int> tyingPlayerIds{};
+		for (int i = 0; i < Constants::nPlayers; ++i)
 		{
-			return gameContext.m_pot;
+			if (gameContext.m_foldedPlayersStatus.test(i))
+			{
+				continue;
+			}
+			auto hand = gameContext.m_deck.getRiverHand(i);
+			if (int handStrength = std::apply(evaluate_7cards, hand); handStrength <= bestHandSeen) // smaller index is stronger
+			{
+				if (handStrength == bestHandSeen)
+				{
+					tyingPlayerIds.insert(i);
+					continue;
+				}
+				tyingPlayerIds.clear();
+				tyingPlayerIds.insert(i);
+				bestHandSeen = handStrength;
+			}
 		}
-		// TODO: this branch might be useless, as when the updating player folds, the search ends.
+		if (tyingPlayerIds.find(gameContext.m_updatingPlayerId) != tyingPlayerIds.end())
+		{
+			return static_cast<int>(gameContext.m_pot / tyingPlayerIds.size()); // Integer Division, inaccuracy negligible 
+		}
 		else
 		{
 			return -gameContext.m_moneyInPot[gameContext.m_updatingPlayerId];
 		}
 	}
+	return std::nullopt; 
+}
 
-	// STEP 2: check if the current betting round is over.
+float traverseMccfrWithNewAction(Action a, GameContext& gameContext, 
+	float& actionValue, float strategy, bool isPruning)
+{
+	float result = 0.0f;
+	gameContext.m_history[(uint8_t)gameContext.m_currentBettingRound][gameContext.m_roundActionIndex] = a;
+	++gameContext.m_roundActionIndex;
+	int previousStack = gameContext.m_stacks[gameContext.m_currentPlayerTurn];
+	int previousBet = gameContext.m_currentBet;
+	int previousPot = gameContext.m_pot;
+	int previousLastBettingPlayer = gameContext.m_lastBettingPlayer;
+	applyAction(gameContext, a);
+	gameContext.m_currentPlayerTurn = getNextPlayer(gameContext.m_currentPlayerTurn);
+	actionValue = traverseMccfr(gameContext, isPruning);
+	gameContext.m_currentPlayerTurn = getPreviousPlayer(gameContext.m_currentPlayerTurn);
+	unApplyAction(gameContext, a, previousStack, previousBet, previousPot, previousLastBettingPlayer);
+	result = strategy * actionValue;
+	--gameContext.m_roundActionIndex;
+	gameContext.m_history[(uint8_t)gameContext.m_currentBettingRound][gameContext.m_roundActionIndex] = Action::Count;
+	return result;
+}
+
+float traverseMccfr(GameContext& gameContext, const bool isPruning = false)
+{
+	if (auto payoff = isTerminalState(gameContext); payoff)
+	{
+		return payoff.value();
+	}
+	
+	// Betting Round Complete
+	PreviousBettingRoundSnapshot previousRoundSnapshot;
 	if ((gameContext.m_currentPlayerTurn == gameContext.m_lastBettingPlayer && !(gameContext.isBBPreflopException())) ||
 		gameContext.m_isCheckAfterBBPreflopException ||
 		gameContext.allinState())
 	{
 		gameContext.m_isCheckAfterBBPreflopException = false;
-		if (gameContext.m_currentBettingRound == BettingRound::River)
-		{
-			// Showdown
-			int bestHandSeen = INT_MAX;
-			std::unordered_set<int> tyingPlayerIds{};
-			for (int i = 0; i < Constants::nPlayers; ++i)
-			{
-				if (gameContext.m_foldedPlayersStatus.test(i))
-				{
-					continue;
-				}
-				auto hand = gameContext.m_deck.getRiverHand(i);
-				if (int handStrength = std::apply(evaluate_7cards, hand); handStrength <= bestHandSeen) // smaller index is stronger
-				{
-					if (handStrength == bestHandSeen)
-					{
-						tyingPlayerIds.insert(i);
-						continue;
-					}
-					tyingPlayerIds.clear();
-					tyingPlayerIds.insert(i);
-					bestHandSeen = handStrength;
-				}
-			}
-			if (tyingPlayerIds.find(gameContext.m_updatingPlayerId) != tyingPlayerIds.end())
-			{
-				return static_cast<int>(gameContext.m_pot / tyingPlayerIds.size()); // Integer Division, inaccuracy negligible 
-			}
-			else
-			{
-				return -gameContext.m_moneyInPot[gameContext.m_updatingPlayerId];
-			}
-		}
+		
 		snapBettingRound(gameContext, previousRoundSnapshot);
+		// Move to the next betting round
 		gameContext.m_currentBettingRound = (BettingRound) ((uint8_t)gameContext.m_currentBettingRound + 1);
 		gameContext.m_currentPlayerTurn = getSBPlayerIdFromButton(gameContext.m_currentButtonPlayerId); // The SB starts the new round.
 		gameContext.m_lastBettingPlayer = gameContext.m_currentPlayerTurn;
@@ -964,14 +983,12 @@ float traverseMccfr(GameContext& gameContext, const bool isPruning = false)
 	{
 		value = traverseMccfr(gameContext, isPruning);
 	}
-	// STEP 3: check if the current player is still in play.
 	else if (gameContext.m_foldedPlayersStatus.test(gameContext.m_currentPlayerTurn))
 	{
 		gameContext.m_currentPlayerTurn = getNextPlayer(gameContext.m_currentPlayerTurn);
 		value = traverseMccfr(gameContext, isPruning);
 		gameContext.m_currentPlayerTurn = getPreviousPlayer(gameContext.m_currentPlayerTurn);
 	}
-	// STEP 4: apply current player's actions.
 	else
 	{
 		auto abstractedStacks = abstractStacks(gameContext.m_currentPlayerTurn, gameContext.m_stacks);
@@ -984,12 +1001,11 @@ float traverseMccfr(GameContext& gameContext, const bool isPruning = false)
 			infosetItr->second.calculateStrategy();
 		}
 
-
 		Infoset& infoset = infosetItr->second;
+		const auto strategy = infoset.calculateStrategy();
 		if (gameContext.m_currentPlayerTurn == gameContext.m_updatingPlayerId)
 		{
 			++DebugGlobals::visited;
-			const auto strategy = infoset.calculateStrategy();
 			Actions allowedActions = infoset.getActions();
 			std::array<float, Action::Count> actionValues{ 0 };
 			for (int i = 0; i < Action::Count; ++i)
@@ -1004,43 +1020,18 @@ float traverseMccfr(GameContext& gameContext, const bool isPruning = false)
 					allowedActions.unset(a);
 					continue;
 				}
-				gameContext.m_history[(uint8_t)gameContext.m_currentBettingRound][gameContext.m_roundActionIndex] = a;
-				++gameContext.m_roundActionIndex;
-				int previousStack = gameContext.m_stacks[gameContext.m_currentPlayerTurn];
-				int previousBet = gameContext.m_currentBet;
-				int previousPot = gameContext.m_pot;
-				int previousLastBettingPlayer = gameContext.m_lastBettingPlayer;
-				applyAction(gameContext, a);
-				gameContext.m_currentPlayerTurn = getNextPlayer(gameContext.m_currentPlayerTurn);
-				actionValues[a] = traverseMccfr(gameContext, isPruning);
-				gameContext.m_currentPlayerTurn = getPreviousPlayer(gameContext.m_currentPlayerTurn);
-				unApplyAction(gameContext, a, previousStack, previousBet, previousPot, previousLastBettingPlayer);
-				value += strategy[a] * actionValues[a];
-				--gameContext.m_roundActionIndex;
-				gameContext.m_history[(uint8_t)gameContext.m_currentBettingRound][gameContext.m_roundActionIndex] = Action::Count;
+				value += traverseMccfrWithNewAction(a, gameContext, actionValues[i], strategy[i], isPruning);
 			}
 
 			infoset.updateRegrets(actionValues, allowedActions, value);	
+			// TODO (keb): Redundant?
 			infoset.calculateStrategy();
 		}
 		else
 		{
-			const auto strategy = infoset.calculateStrategy();
 			Random::rand();
 			Action a = sampleAction(Random::rand(), strategy, infoset.getActions());
-			gameContext.m_history[(uint8_t)gameContext.m_currentBettingRound][gameContext.m_roundActionIndex] = a;
-			++gameContext.m_roundActionIndex;
-			int previousStack = gameContext.m_stacks[gameContext.m_currentPlayerTurn];
-			int previousBet = gameContext.m_currentBet;
-			int previousPot = gameContext.m_pot;
-			int previousLastBettingPlayer = gameContext.m_lastBettingPlayer;
-			applyAction(gameContext, a);
-			gameContext.m_currentPlayerTurn = getNextPlayer(gameContext.m_currentPlayerTurn);
-			value = traverseMccfr(gameContext, isPruning);
-			gameContext.m_currentPlayerTurn = getPreviousPlayer(gameContext.m_currentPlayerTurn);
-			unApplyAction(gameContext, a, previousStack, previousBet, previousPot, previousLastBettingPlayer);
-			--gameContext.m_roundActionIndex;
-			gameContext.m_history[(uint8_t)gameContext.m_currentBettingRound][gameContext.m_roundActionIndex] = Action::Count;
+			traverseMccfrWithNewAction(a, gameContext, value, 1, isPruning);
 		}
 	}
 	
@@ -1095,15 +1086,33 @@ void updateEachPlayer(GameContext& gameContext, bool isPruningIteration)
 	for (int playerId = 0; playerId < Constants::nPlayers; ++playerId)
 	{
 		gameContext.resetForNextPlayer(playerId);
-		// TODO (keb): Take a snapshot of the current strategy to make an average of the snapshots later.
-		//if (t % Constants::strategyInterval == 0)
-		//{
-		//	updateStrategy(_, playerIdx);
-		//}
 		gameContext.m_updatingPlayerId = playerId;
 		gameContext.m_currentPlayerTurn = getNextPlayer(getBBPlayerIdFromButton(gameContext.m_currentButtonPlayerId));
 		placeBlinds(gameContext);
 		traverseMccfr(gameContext, isPruningIteration);
+	}
+}
+
+void snapStrategies(int t)
+{
+	// TODO (keb): Take a snapshot of the current strategy to make an average of the snapshots later.
+	// for (player in players)
+	// if (t % Constants::strategyInterval == 0)
+	// {
+	// 	updateStrategy(_, playerIdx);
+	// }
+}
+
+void discountRegrets(int timeElapsed)
+{
+	if (timeElapsed < Constants::LCFRThresholdMinutes && 
+		(timeElapsed % Constants::discountIntervalMinutes == 0))
+	{
+		double discount = (timeElapsed / static_cast<double>(Constants::discountIntervalMinutes)) / ((timeElapsed / static_cast<double>(Constants::discountIntervalMinutes)) + 1);
+		for (auto& [key, infoset] : infosets)
+		{
+			infoset.discountRegrets(discount);
+		}
 	}
 }
 
@@ -1119,6 +1128,8 @@ void mccfrP(int nIterations)
 	{
 		GameContext gameContext{};
 
+		snapStrategies(t);
+
 		bool isPruningIteration = false;
 		const auto timeElapsed = Time::getTimeElapsed(startTime, 1min);
 		if (timeElapsed > Constants::pruningThresholdMinutes)
@@ -1126,16 +1137,8 @@ void mccfrP(int nIterations)
 			isPruningIteration = Random::rand() < 0.95;
 		}
 		updateEachPlayer(gameContext, isPruningIteration);
-		
-		if (timeElapsed < Constants::LCFRThresholdMinutes && 
-			(timeElapsed % Constants::discountIntervalMinutes == 0))
-		{
-			double discount = (timeElapsed / static_cast<double>(Constants::discountIntervalMinutes)) / ((timeElapsed / static_cast<double>(Constants::discountIntervalMinutes)) + 1);
-			for (auto& [key, infoset] : infosets)
-			{
-				infoset.discountRegrets(discount);
-			}
-		}
+
+		discountRegrets(timeElapsed);
 	}
 }
 

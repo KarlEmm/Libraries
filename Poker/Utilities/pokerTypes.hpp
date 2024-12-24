@@ -23,6 +23,7 @@ namespace AbstractionsContext
 	constexpr int nFlopBuckets = 200;
 	constexpr int nTurnBuckets = 200;
 	constexpr int nRiverBuckets = 200;
+	constexpr int maxNBuckets = 200;
 	constexpr int nEHSHistogramsBins = 50;
 	constexpr int nOCHSHistogramsBins = 8;
 
@@ -302,7 +303,6 @@ enum Action : uint8_t
 	Fold,
 	Call,
 	Check,
-	BetQuarter,
 	BetHalf,
 	BetPot,
 	BetOver,
@@ -318,40 +318,6 @@ enum class BettingRound : uint8_t
 	RoundCount
 };
 
-// NOTE (keb): 6 is the most actions that can happen on a heads up betting round.
-struct GameHistory
-{
-	GameHistory()
-	{
-		reset();
-	}
-
-	void reset()
-	{
-		for (auto& round : m_history)
-		{
-			round.fill(Action::Count);
-		}
-	}
-
-	std::string toString()
-	{
-		std::string result;
-		for (const auto& round : m_history)
-		{
-			for (const auto& action : round)
-			{
-				result += std::to_string((int)action);
-			}
-			result += "/";
-		}
-		return result;
-	}
-	std::array<Action, 6>& operator[](size_t index) { return m_history[index]; }
-	const std::array<Action, 6>& operator[](size_t index) const { return m_history[index]; }
-
-	std::array<std::array<Action, 6>, (uint8_t)BettingRound::RoundCount> m_history;
-};
 
 namespace Constants
 {
@@ -393,6 +359,41 @@ namespace Constants
 
 	constexpr int maxNBetsPreflop = 4;
 	constexpr int maxNBetsForRound = 3;
+	constexpr int maxNActionsPerRound = 5;
+};
+
+struct GameHistory
+{
+	GameHistory()
+	{
+		reset();
+	}
+
+	void reset()
+	{
+		for (auto& round : m_history)
+		{
+			round.fill(Action::Count);
+		}
+	}
+
+	std::string toString()
+	{
+		std::string result;
+		for (const auto& round : m_history)
+		{
+			for (const auto& action : round)
+			{
+				result += std::to_string((int)action);
+			}
+			result += "/";
+		}
+		return result;
+	}
+	std::array<Action, Constants::maxNActionsPerRound>& operator[](size_t index) { return m_history[index]; }
+	const std::array<Action, Constants::maxNActionsPerRound>& operator[](size_t index) const { return m_history[index]; }
+
+	std::array<std::array<Action, Constants::maxNActionsPerRound>, (uint8_t)BettingRound::RoundCount> m_history;
 };
 
 
