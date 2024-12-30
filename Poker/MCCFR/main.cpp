@@ -1,7 +1,4 @@
-// TODO (keb):
-// 1. Write a Serializer to dump and read infosets from a file.
-// 2. Write an interface to query the infosets.
-
+#include <externalHashMap.hpp>
 #include <kmeans.hpp>
 #include <memory.hpp>
 #include <pokerTypes.hpp>
@@ -291,19 +288,24 @@ public:
 	{
 		// NOTE (keb): 60 bits for at most 5 actions per betting round * 4 betting rounds * 3 bits per action
 		// TODO (keb): not flexible, can't add more players
-		uint64_t history : 60;
-		uint16_t clusterIndex : 8;
-		uint8_t playerid : 2;			
-		uint8_t stacks : 2*3;
-		uint8_t pot : 3;
+		uint64_t history : Constants::maxNActionsPerRound * (uint8_t)BettingRound::RoundCount * 3;
+		uint8_t clusterIndex : 8;
+		uint8_t playerid : 2; // TODO (keb): the playerid might be baked in.	
+		// uint8_t stacks : 2*3;
+		// uint8_t pot : 3;
 		
 		bool operator==(const Key &other) const
 		{ return (history == other.history 
 			&& playerid == other.playerid
-			&& clusterIndex == other.clusterIndex
-			&& stacks == other.stacks
-			&& pot == other.pot);
+			&& clusterIndex == other.clusterIndex);
+			// && stacks == other.stacks
+			// && pot == other.pot);
 		}
+
+		__uint128_t asInteger()
+		{
+			return ((history << 10) | (clusterIndex << 2) | (playerid));
+		}	
 	};
 
 	struct KeyHasher
@@ -318,8 +320,8 @@ public:
 			res = res * 31 + hash<uint64_t>()( k.history);
 			res = res * 31 + hash<uint16_t>()( k.clusterIndex);
 			res = res * 31 + hash<uint8_t>()( k.playerid);
-			res = res * 31 + hash<uint8_t>()( k.stacks);
-			res = res * 31 + hash<uint8_t>()( k.pot);
+			// res = res * 31 + hash<uint8_t>()( k.stacks);
+			// res = res * 31 + hash<uint8_t>()( k.pot);
 			return res;
 		}
 	};
@@ -420,16 +422,15 @@ public:
 		}
 	}
 
-	// const std::array<float, Action::Count>& getStrategy() { return strategy; }
-
 private:
-	// std::array<float, Action::Count> strategy{ 0.0 };
 	std::array<int, Action::Count> regrets{ 0 };
 	Actions allowedActions{0};
 	uint8_t nTrainingIterations {0};
 };
 
-inline std::unordered_map<Infoset::Key, Infoset, Infoset::KeyHasher> infosets;
+// TODO (keb): Adjust the total number of possible infosets for your abstraction. 
+// TODO (keb): Find a way to have a smaller key. 
+ExtHM::ExternalHashMap<__uint128_t, Infoset> infosets ("dummySolution.dat", 1'000'000'000);
 
 enum AbstractedSizeRatio : uint8_t
 {
@@ -597,9 +598,10 @@ std::string getHandStr(int playerId, const Deck& deck, BettingRound round)
 }
 
 // TODO: horrible code, templatize?
-uint16_t getAbstractionIndex(int playerId, const Deck& deck, BettingRound round)
+template <typename T>
+T getAbstractionIndex(int playerId, const Deck& deck, BettingRound round)
 {
-	uint16_t result;
+	T result;
 	switch (round)
 	{
 	case BettingRound::Preflop:
@@ -645,10 +647,10 @@ uint16_t getAbstractionIndex(int playerId, const Deck& deck, BettingRound round)
 	}
 	default:
 	{
-		return std::numeric_limits<uint16_t>::max();
+		return std::numeric_limits<T>::max();
 	}
 	}
-	return std::numeric_limits<uint16_t>::max();
+	return std::numeric_limits<T>::max();
 }
 
 uint64_t serializeHistory(const GameHistory& history)
@@ -682,7 +684,7 @@ Infoset::Key makeInfosetKey(const GameHistory& history,
 {
 	// TODO (keb): review this
 	Infoset::Key key;
-	uint16_t clusterIndex = getAbstractionIndex(playerId, deck, bettingRound);
+	uint8_t clusterIndex = getAbstractionIndex<uint8_t>(playerId, deck, bettingRound);
 	assert(clusterIndex < AbstractionsContext::maxNBuckets && "Invalid Information Abstraction Cluster Index");
 	key.clusterIndex = clusterIndex;
 	key.playerid = playerId;
@@ -706,6 +708,8 @@ Action sampleAction(double rand, const std::array<float, Action::Count>& strateg
 	float randAcc = 0.0;
 	for (int i = 0; i < strategy.size(); ++i)
 	{
+		// TODO (keb): can get rid of this branch. An illegal action will have a corresponding
+		// strategy entry equal to zero.
 		if (!allowedActions.test(static_cast<Action>(i)))
 		{
 			continue;
@@ -808,7 +812,7 @@ void applyAction(GameContext& gameContext, Action a)
 	}
 	default:
 	{
-		std::cerr << "Applying Invalid Action" << std::endl;
+		assert(false && "Applying Invalid Action");
 	}
 	}
 }
@@ -841,7 +845,7 @@ void unApplyAction(GameContext& gameContext, Action a, int previousStack, int pr
 	}
 	default:
 	{
-		std::cerr << "Unapplying Invalid Action" << std::endl;
+		assert(false && "Unapplying Invalid Action");
 	}
 	}
 }
@@ -932,6 +936,28 @@ std::optional<float> isTerminalState(GameContext& gameContext)
 	return std::nullopt; 
 }
 
+PreviousBettingRoundSnapshot moveToNextRound(GameContext& gameContext)
+{
+	PreviousBettingRoundSnapshot snapshot;
+	if ((gameContext.m_currentPlayerTurn == gameContext.m_lastBettingPlayer && !(gameContext.isBBPreflopException())) ||
+		gameContext.m_isCheckAfterBBPreflopException ||
+		gameContext.allinState())
+	{
+		gameContext.m_isCheckAfterBBPreflopException = false;
+		
+		snapBettingRound(gameContext, snapshot);
+		// Move to the next betting round
+		gameContext.m_currentBettingRound = (BettingRound) ((uint8_t)gameContext.m_currentBettingRound + 1);
+		gameContext.m_currentPlayerTurn = getSBPlayerIdFromButton(gameContext.m_currentButtonPlayerId); // The SB starts the new round.
+		gameContext.m_lastBettingPlayer = gameContext.m_currentPlayerTurn;
+		gameContext.m_currentBet = 0;
+		gameContext.m_nBetInCurrentRound = 0;
+		gameContext.m_roundActionIndex = 0;
+	}
+	return snapshot;
+}
+
+float traverseMccfr(GameContext& gameContext, const bool isPruning = false);
 float traverseMccfrWithNewAction(Action a, GameContext& gameContext, 
 	float& actionValue, float strategy, bool isPruning)
 {
@@ -953,37 +979,23 @@ float traverseMccfrWithNewAction(Action a, GameContext& gameContext,
 	return result;
 }
 
-float traverseMccfr(GameContext& gameContext, const bool isPruning = false)
+float traverseMccfr(GameContext& gameContext, const bool isPruning)
 {
 	if (auto payoff = isTerminalState(gameContext); payoff)
 	{
 		return payoff.value();
 	}
 	
-	// Betting Round Complete
-	PreviousBettingRoundSnapshot previousRoundSnapshot;
-	if ((gameContext.m_currentPlayerTurn == gameContext.m_lastBettingPlayer && !(gameContext.isBBPreflopException())) ||
-		gameContext.m_isCheckAfterBBPreflopException ||
-		gameContext.allinState())
-	{
-		gameContext.m_isCheckAfterBBPreflopException = false;
-		
-		snapBettingRound(gameContext, previousRoundSnapshot);
-		// Move to the next betting round
-		gameContext.m_currentBettingRound = (BettingRound) ((uint8_t)gameContext.m_currentBettingRound + 1);
-		gameContext.m_currentPlayerTurn = getSBPlayerIdFromButton(gameContext.m_currentButtonPlayerId); // The SB starts the new round.
-		gameContext.m_lastBettingPlayer = gameContext.m_currentPlayerTurn;
-		gameContext.m_currentBet = 0;
-		gameContext.m_nBetInCurrentRound = 0;
-		gameContext.m_roundActionIndex = 0;
-	}
+	PreviousBettingRoundSnapshot previousRoundSnapshot = moveToNextRound(gameContext);
 
 	float value = 0.0;
+	// Everyone Allin
 	if (gameContext.allinState())
 	{
 		value = traverseMccfr(gameContext, isPruning);
 	}
-	else if (gameContext.m_foldedPlayersStatus.test(gameContext.m_currentPlayerTurn))
+	// Fold or Allin
+	else if (gameContext.m_foldedPlayersStatus.test(gameContext.m_currentPlayerTurn) || gameContext.m_stacks[gameContext.m_currentPlayerTurn] <= 0)
 	{
 		gameContext.m_currentPlayerTurn = getNextPlayer(gameContext.m_currentPlayerTurn);
 		value = traverseMccfr(gameContext, isPruning);
@@ -994,14 +1006,14 @@ float traverseMccfr(GameContext& gameContext, const bool isPruning = false)
 		auto abstractedStacks = abstractStacks(gameContext.m_currentPlayerTurn, gameContext.m_stacks);
 		auto abstractedPot = abstractPot(gameContext.m_pot, gameContext.m_stacks[gameContext.m_currentPlayerTurn]);
 		Infoset::Key infosetKey = makeInfosetKey(gameContext.m_history, gameContext.m_currentPlayerTurn, gameContext.m_deck, gameContext.m_currentBettingRound, abstractedStacks, abstractedPot, gameContext.m_foldedPlayersStatus);
-		auto [infosetItr, isNewState] = infosets.try_emplace(infosetKey, Infoset());
+		auto [infosetWrapped, isNewState] = infosets.insert(infosetKey.asInteger(), Infoset());
+		Infoset& infoset = infosetWrapped.get();
 		if (isNewState)
 		{
-			infosetItr->second.setActions(gameContext);
-			infosetItr->second.calculateStrategy();
+			infoset.setActions(gameContext);
+			infoset.calculateStrategy();
 		}
 
-		Infoset& infoset = infosetItr->second;
 		const auto strategy = infoset.calculateStrategy();
 		if (gameContext.m_currentPlayerTurn == gameContext.m_updatingPlayerId)
 		{
@@ -1024,12 +1036,9 @@ float traverseMccfr(GameContext& gameContext, const bool isPruning = false)
 			}
 
 			infoset.updateRegrets(actionValues, allowedActions, value);	
-			// TODO (keb): Redundant?
-			infoset.calculateStrategy();
 		}
 		else
 		{
-			Random::rand();
 			Action a = sampleAction(Random::rand(), strategy, infoset.getActions());
 			traverseMccfrWithNewAction(a, gameContext, value, 1, isPruning);
 		}
@@ -1119,7 +1128,7 @@ void discountRegrets(int timeElapsed)
 void mccfrP(int nIterations)
 {
 	using namespace std::chrono_literals;
-	
+
 	initAbstractions();
 		
 	auto startTime = std::chrono::steady_clock::now();
@@ -1146,6 +1155,6 @@ void mccfrP(int nIterations)
 
 int main()
 {
-	MCCFR::mccfrP(10000000);
+	MCCFR::mccfrP(100000000);
 	return 0;
 }

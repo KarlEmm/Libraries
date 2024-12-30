@@ -12,6 +12,7 @@ namespace Memory
 template <typename T>
 struct MmapDeleter
 {
+    MmapDeleter() = default;
     explicit MmapDeleter(size_t size) : m_size{size} {};
     MmapDeleter(const MmapDeleter& other) = default;
     MmapDeleter(MmapDeleter&& other) = default;

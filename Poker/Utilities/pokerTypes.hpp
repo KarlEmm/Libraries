@@ -359,6 +359,7 @@ namespace Constants
 
 	constexpr int maxNBetsPreflop = 4;
 	constexpr int maxNBetsForRound = 3;
+	// NOTE (keb): For Heads Up: Check, Bet, Bet, Bet, Call
 	constexpr int maxNActionsPerRound = 5;
 };
 
